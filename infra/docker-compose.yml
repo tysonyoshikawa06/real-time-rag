@@ -111,5 +111,37 @@ services:
         /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 \
           --describe --topic transactions
 
+  postgres:
+    image: pgvector/pgvector:pg17
+    container_name: postgres
+    # Host port 5433 avoids colliding with a local Postgres that might already
+    # be running on the default 5432. Inside the container it's still 5432 —
+    # other containers on this compose network connect to postgres:5432.
+    ports:
+      - "5433:5432"
+    environment:
+      POSTGRES_USER: rag
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: streaming_rag
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      # Any .sql file in this directory runs automatically on FIRST startup
+      # (when the data directory is empty). On subsequent starts it's skipped,
+      # so the schema isn't re-applied. To re-run: make down, remove the
+      # volume (docker volume rm infra_postgres-data), then make up.
+      - ./init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: pg_isready -U rag -d streaming_rag
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    deploy:
+      resources:
+        limits:
+          memory: 512m
+          cpus: "0.5"
+
 volumes:
   kafka-data:
+  postgres-data:

@@ -5,6 +5,9 @@ description = "Real-time streaming RAG: operational intelligence over a live eve
 requires-python = ">=3.11"
 dependencies = [
     "confluent-kafka>=2.6",
+    "psycopg[binary]>=3.2",
+    "pgvector>=0.3",
+    "python-dotenv>=1.0",
 ]
 
 [dependency-groups]
