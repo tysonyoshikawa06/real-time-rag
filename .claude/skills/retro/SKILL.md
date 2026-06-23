@@ -9,12 +9,16 @@ Turn this session's lessons into durable improvements to the `.claude/` config.
 This is how the agents get better across sessions.
 
 ## Sources of learning
+
 - Each agent runs with `memory: project`, so it keeps a `MEMORY.md` under
   `.claude/agent-memory/<agent>/`. Read these for accumulated notes.
 - The current session: recurring fixes, spec gaps that caused rework, test
   patterns that worked, gotchas in the run recipe, wrong graph assumptions.
+- At the end of every change, update the `PROJECTSTATE.md` file at the root of this project
+  to reflect the changes you made.
 
 ## What to do
+
 1. Summarize concrete, **reusable** lessons (not one-off details).
 2. Map each lesson to the file that should change:
    - a convention or recipe detail → the relevant skill (`run-tests`,
@@ -29,6 +33,7 @@ This is how the agents get better across sessions.
    start (or immediately via the `/agents` and `/skills` interfaces).
 
 ## Guardrails
+
 - Keep skills focused — tighten wording, don't pile on. A skill that grows
   unbounded triggers worse and costs more context.
 - Don't promote a one-time workaround into a permanent rule.

@@ -1,4 +1,4 @@
-.PHONY: up down smoke smoke-db logs
+.PHONY: up down smoke smoke-db logs produce watch
 
 # --env-file .env is required because Docker Compose v5+ no longer auto-reads
 # .env from the working directory. This loads POSTGRES_PASSWORD (and any future
@@ -19,3 +19,9 @@ smoke-db:
 
 logs:
 	$(COMPOSE) logs -f
+
+produce:
+	uv run python -m producer.main
+
+watch:
+	uv run python -m producer.watch

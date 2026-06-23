@@ -47,3 +47,5 @@ eval/ground_truth/*.jsonl
 
 # uv
 .python-version
+
+PROJECT_STATE.md
