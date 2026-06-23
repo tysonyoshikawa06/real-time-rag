@@ -5,24 +5,24 @@ and reuse them without touching the producer loop.
 """
 
 MERCHANTS = [
-    "CloudKitchen Co",
-    "Petal & Thorn Florist",
-    "NeonByte Gaming",
-    "UrbanGrind Coffee",
-    "Atlas Freight",
-    "Verdant Grocers",
-    "SilkRoute Textiles",
-    "Bolt EV Charging",
-    "Pinnacle SaaS",
-    "Harbor Fish Market",
-    "Crimson Gym",
-    "Driftwood Books",
-    "Starline Pharmacy",
-    "Mosaic Home Goods",
-    "QuickLube Auto",
-    "Frostbite Ice Cream",
-    "TerraFirma Insurance",
-    "Wavelength Music",
+    "24 Hour Fitness",
+    "Anthropic",
+    "Fortnite",
+    "Cornell University",
+    "Foodland Hawaii",
+    "Walmart",
+    "Sam's Club",
+    "Valorant",
+    "Costco",
+    "LeetCode Premium",
+    "LinkedIn Premium"
+    "Spotify Premium",
+    "Safeway",
+    "7-Eleven",
+    "United Airlines",
+    "Oishii Bowl",
+    "2Hollis LLC",
+    "Andrea & Co.",
 ]
 
 GATEWAYS = [
