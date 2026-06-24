@@ -34,7 +34,10 @@ def _format_summary(event: dict) -> str:
     amount = f"${event['amount']:,.2f}"
     status = event["status"]
     gateway = event["gateway"]
-    return f"{ts}  {method:<6} {amount:>10}  {status:<7}  {gateway}"
+    line = f"{ts}  {method:<6} {amount:>10}  {status:<7}  {gateway}"
+    if event.get("error_text"):
+        line += f"  | {event['error_text']}"
+    return line
 
 
 def run(rate: int, count: int | None, duration: float | None, log_every: int):

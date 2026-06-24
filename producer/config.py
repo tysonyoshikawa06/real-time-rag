@@ -15,7 +15,7 @@ MERCHANTS = [
     "Valorant",
     "Costco",
     "LeetCode Premium",
-    "LinkedIn Premium"
+    "LinkedIn Premium",
     "Spotify Premium",
     "Safeway",
     "7-Eleven",

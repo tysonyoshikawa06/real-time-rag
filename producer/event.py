@@ -18,6 +18,7 @@ from producer.config import (
     MERCHANTS,
     METHOD_WEIGHTS,
 )
+from producer.errors import generate_error_text
 
 _METHODS = list(METHOD_WEIGHTS.keys())
 _METHOD_CUM_WEIGHTS = list(METHOD_WEIGHTS.values())
@@ -36,6 +37,8 @@ def generate_event() -> dict:
     status = "failure" if random.random() < FAILURE_RATE else "success"
 
     card_bin = random.choice(CARD_BINS) if method == "card" else None
+    gateway = random.choice(GATEWAYS)
+    error_text = generate_error_text(method, gateway) if status == "failure" else None
 
     return {
         "transaction_id": str(uuid.uuid4()),
@@ -44,8 +47,8 @@ def generate_event() -> dict:
         "method": method,
         "amount": round(amount, 2),
         "status": status,
-        "gateway": random.choice(GATEWAYS),
-        "error_text": None,
+        "gateway": gateway,
+        "error_text": error_text,
         "card_bin": card_bin,
     }
 

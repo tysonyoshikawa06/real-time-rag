@@ -41,10 +41,14 @@ def main():
             merchant = event["merchant"]
             card_bin = event.get("card_bin") or ""
 
-            print(
+            error_text = event.get("error_text") or ""
+            line = (
                 f"{ts}  {method:<6} {amount:>10}  {status:<7}  {gateway:<16}  "
                 f"{merchant:<22}  {card_bin}"
             )
+            if error_text:
+                line += f"  | {error_text}"
+            print(line)
     except KeyboardInterrupt:
         pass
     finally:
