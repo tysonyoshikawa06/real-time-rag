@@ -5,6 +5,8 @@ new entries and activates biasing + ground-truth logging.
 
 Usage:
     python -m producer.inject gateway_degradation --gateway stripe-proxy --duration 2m
+    python -m producer.inject fraud_burst --duration 2m
+    python -m producer.inject fraud_burst --duration 2m --card-bin 411111
     python -m producer.inject status
     python -m producer.inject clear
 """
@@ -15,7 +17,9 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from producer.config import GATEWAYS
+import random
+
+from producer.config import CARD_BINS, GATEWAYS
 from producer.scenarios import CONTROL_FILE
 
 
@@ -66,6 +70,28 @@ def _cmd_gateway_degradation(args):
     print(f"Injected: gateway_degradation targeting {args.gateway} for {duration_sec}s (severity={args.severity})")
 
 
+def _cmd_fraud_burst(args):
+    now = datetime.now(timezone.utc)
+    duration_sec = _parse_duration(args.duration)
+    card_bin = args.card_bin or random.choice(CARD_BINS)
+
+    incident = {
+        "id": f"fraud-{uuid.uuid4().hex[:8]}",
+        "type": "fraud_burst",
+        "params": {
+            "card_bin": card_bin,
+            "intensity": args.intensity,
+        },
+        "started_at": now.isoformat(),
+        "expires_at": (now + timedelta(seconds=duration_sec)).isoformat(),
+    }
+
+    incidents = _read_control()
+    incidents.append(incident)
+    _write_control(incidents)
+    print(f"Injected: fraud_burst BIN={card_bin} for {duration_sec}s (intensity={args.intensity})")
+
+
 def _cmd_status(args):
     incidents = _read_control()
     now = datetime.now(timezone.utc)
@@ -95,6 +121,13 @@ def main():
     gw.add_argument("--duration", required=True, help="e.g. 2m, 30s, 120")
     gw.add_argument("--severity", type=float, default=0.35, help="Failure probability (default: 0.35)")
     gw.set_defaults(func=_cmd_gateway_degradation)
+
+    fb = sub.add_parser("fraud_burst", help="Inject small same-BIN card charges")
+    fb.add_argument("--duration", required=True, help="e.g. 2m, 30s, 120")
+    fb.add_argument("--card-bin", default=None, help=f"Target BIN (default: random from {CARD_BINS})")
+    fb.add_argument("--intensity", type=float, default=0.25,
+                    help="Probability of extra fraud event per tick (default: 0.25 ≈ 5/sec at 20 evt/sec)")
+    fb.set_defaults(func=_cmd_fraud_burst)
 
     sub.add_parser("status", help="Show active incidents").set_defaults(func=_cmd_status)
     sub.add_parser("clear", help="Clear all incidents").set_defaults(func=_cmd_clear)

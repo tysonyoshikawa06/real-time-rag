@@ -13,9 +13,11 @@ import json
 import os
 import random
 import time
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
+from producer.config import CARD_BINS, GATEWAYS, MERCHANTS
 from producer.errors import GATEWAY_TIMEOUT, NETWORK_ERROR
 
 CONTROL_FILE = Path(__file__).parent / "control.json"
@@ -56,8 +58,38 @@ def _apply_gateway_degradation(event: dict, params: dict) -> dict:
     return event
 
 
+def _generate_fraud_event(params: dict) -> dict | None:
+    """Maybe generate an extra fraud-shaped event. Returns None if not this tick.
+
+    Fraud events are small card charges ($1-$5) all sharing one BIN, spread
+    across many merchants, mostly succeeding. No single event is suspicious —
+    only the aggregate pattern (shared BIN, tiny amounts, high velocity).
+    """
+    intensity = params.get("intensity", 0.25)
+    if random.random() > intensity:
+        return None
+
+    return {
+        "transaction_id": str(uuid.uuid4()),
+        "event_timestamp": datetime.now(timezone.utc).isoformat(),
+        "merchant": random.choice(MERCHANTS),
+        "method": "card",
+        "amount": round(random.uniform(1.00, 5.00), 2),
+        "status": "success",
+        "gateway": random.choice(GATEWAYS),
+        "error_text": None,
+        "card_bin": params["card_bin"],
+    }
+
+
 INCIDENT_APPLIERS = {
     "gateway_degradation": _apply_gateway_degradation,
+}
+
+# Generators return extra events (or None to skip). Unlike appliers, these
+# produce NEW events rather than modifying existing ones.
+INCIDENT_GENERATORS = {
+    "fraud_burst": _generate_fraud_event,
 }
 
 
@@ -133,6 +165,17 @@ class ScenarioEngine:
             if applier:
                 event = applier(event, inc["params"])
         return event
+
+    def generate_extra_events(self) -> list[dict]:
+        """Generate extra events from active incidents (e.g. fraud burst)."""
+        extras = []
+        for inc in self._active.values():
+            generator = INCIDENT_GENERATORS.get(inc["type"])
+            if generator:
+                event = generator(inc["params"])
+                if event is not None:
+                    extras.append(event)
+        return extras
 
     @staticmethod
     def _read_control_file() -> list:

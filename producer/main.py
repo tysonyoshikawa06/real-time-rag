@@ -84,6 +84,19 @@ def run(rate: int, count: int | None, duration: float | None, log_every: int):
             if sent % log_every == 0:
                 print(_format_summary(event))
 
+            for extra in engine.generate_extra_events():
+                payload = json.dumps(extra).encode("utf-8")
+                producer.produce(
+                    KAFKA_TOPIC,
+                    value=payload,
+                    key=extra["transaction_id"].encode("utf-8"),
+                    callback=_delivery_callback,
+                )
+                producer.poll(0)
+                sent += 1
+                if sent % log_every == 0:
+                    print(_format_summary(extra))
+
             # Simple rate limiting: sleep the remainder of the interval.
             # Good enough for 20 events/sec; not meant for high-throughput.
             elapsed = time.monotonic() - start
