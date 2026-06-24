@@ -14,6 +14,7 @@ from confluent_kafka import KafkaError, Producer
 
 from producer.config import KAFKA_BOOTSTRAP, KAFKA_TOPIC
 from producer.event import generate_event
+from producer.scenarios import ScenarioEngine
 
 _shutdown = False
 
@@ -49,6 +50,8 @@ def run(rate: int, count: int | None, duration: float | None, log_every: int):
         "batch.num.messages": 100,
     })
 
+    engine = ScenarioEngine()
+
     interval = 1.0 / rate
     sent = 0
     start = time.monotonic()
@@ -64,7 +67,9 @@ def run(rate: int, count: int | None, duration: float | None, log_every: int):
             if duration is not None and (time.monotonic() - start) >= duration:
                 break
 
+            engine.poll()
             event = generate_event()
+            event = engine.apply(event)
             payload = json.dumps(event).encode("utf-8")
 
             producer.produce(
