@@ -142,6 +142,26 @@ services:
           memory: 512m
           cpus: "0.5"
 
+  # Browser-based Postgres viewer for development. Auto-connects via
+  # DATABASE_URL — no login form, just open http://localhost:8081.
+  # Connects to postgres over the Docker network (postgres:5432), not via
+  # the host-mapped port (localhost:5433).
+  pgweb:
+    image: sosedoff/pgweb:latest
+    container_name: pgweb
+    ports:
+      - "8081:8081"
+    environment:
+      PGWEB_DATABASE_URL: postgres://rag:${POSTGRES_PASSWORD}@postgres:5432/streaming_rag?sslmode=disable
+    depends_on:
+      postgres:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          memory: 128m
+          cpus: "0.25"
+
 volumes:
   kafka-data:
   postgres-data:
