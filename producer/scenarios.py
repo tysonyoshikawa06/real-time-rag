@@ -82,8 +82,28 @@ def _generate_fraud_event(params: dict) -> dict | None:
     }
 
 
+NOVEL_ERROR_SIGNATURE = (
+    "FATAL: currency_mismatch expected=USD got=JPY merchant_cfg_v2 "
+    "locale_override=true fallback_denied"
+)
+
+
+def _apply_novel_error(event: dict, params: dict) -> dict:
+    """Inject a never-before-seen error string on failures from the target merchant."""
+    if event["merchant"] != params["merchant"]:
+        return event
+
+    intensity = params.get("intensity", 0.15)
+    if random.random() < intensity:
+        event["status"] = "failure"
+        event["error_text"] = NOVEL_ERROR_SIGNATURE
+
+    return event
+
+
 INCIDENT_APPLIERS = {
     "gateway_degradation": _apply_gateway_degradation,
+    "novel_error_pattern": _apply_novel_error,
 }
 
 # Generators return extra events (or None to skip). Unlike appliers, these

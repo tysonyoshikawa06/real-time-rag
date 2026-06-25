@@ -7,6 +7,8 @@ Usage:
     python -m producer.inject gateway_degradation --gateway stripe-proxy --duration 2m
     python -m producer.inject fraud_burst --duration 2m
     python -m producer.inject fraud_burst --duration 2m --card-bin 411111
+    python -m producer.inject novel_error_pattern --duration 2m
+    python -m producer.inject novel_error_pattern --duration 2m --merchant "Walmart"
     python -m producer.inject status
     python -m producer.inject clear
 """
@@ -19,7 +21,7 @@ from pathlib import Path
 
 import random
 
-from producer.config import CARD_BINS, GATEWAYS
+from producer.config import CARD_BINS, GATEWAYS, MERCHANTS
 from producer.scenarios import CONTROL_FILE
 
 
@@ -92,6 +94,28 @@ def _cmd_fraud_burst(args):
     print(f"Injected: fraud_burst BIN={card_bin} for {duration_sec}s (intensity={args.intensity})")
 
 
+def _cmd_novel_error_pattern(args):
+    now = datetime.now(timezone.utc)
+    duration_sec = _parse_duration(args.duration)
+    merchant = args.merchant or random.choice(MERCHANTS)
+
+    incident = {
+        "id": f"novel-{uuid.uuid4().hex[:8]}",
+        "type": "novel_error_pattern",
+        "params": {
+            "merchant": merchant,
+            "intensity": args.intensity,
+        },
+        "started_at": now.isoformat(),
+        "expires_at": (now + timedelta(seconds=duration_sec)).isoformat(),
+    }
+
+    incidents = _read_control()
+    incidents.append(incident)
+    _write_control(incidents)
+    print(f"Injected: novel_error_pattern targeting {merchant} for {duration_sec}s (intensity={args.intensity})")
+
+
 def _cmd_status(args):
     incidents = _read_control()
     now = datetime.now(timezone.utc)
@@ -128,6 +152,13 @@ def main():
     fb.add_argument("--intensity", type=float, default=0.25,
                     help="Probability of extra fraud event per tick (default: 0.25 ≈ 5/sec at 20 evt/sec)")
     fb.set_defaults(func=_cmd_fraud_burst)
+
+    ne = sub.add_parser("novel_error_pattern", help="Inject a never-before-seen error string")
+    ne.add_argument("--duration", required=True, help="e.g. 2m, 30s, 120")
+    ne.add_argument("--merchant", default=None, help=f"Target merchant (default: random)")
+    ne.add_argument("--intensity", type=float, default=0.15,
+                    help="Probability of novel error per tick for target merchant (default: 0.15)")
+    ne.set_defaults(func=_cmd_novel_error_pattern)
 
     sub.add_parser("status", help="Show active incidents").set_defaults(func=_cmd_status)
     sub.add_parser("clear", help="Clear all incidents").set_defaults(func=_cmd_clear)
