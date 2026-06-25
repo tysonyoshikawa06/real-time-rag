@@ -1,4 +1,4 @@
-.PHONY: up down smoke smoke-db logs produce watch consume inject-status inject-clear db-count
+.PHONY: up down smoke smoke-db logs produce watch consume inject-status inject-clear db-count freshness
 
 # --env-file .env is required because Docker Compose v5+ no longer auto-reads
 # .env from the working directory. This loads POSTGRES_PASSWORD (and any future
@@ -38,3 +38,6 @@ inject-clear:
 
 db-count:
 	@uv run python -c "import psycopg; c=psycopg.connect('host=localhost port=5433 dbname=streaming_rag user=rag password=localdev'); cur=c.cursor(); cur.execute('SELECT count(*) FROM transactions'); t=cur.fetchone()[0]; cur.execute('SELECT count(*) FROM embeddings'); e=cur.fetchone()[0]; print(f'transactions: {t} rows\nembeddings:   {e} rows'); c.close()"
+
+freshness:
+	@uv run python -m consumer.freshness
