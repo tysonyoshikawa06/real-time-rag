@@ -1,4 +1,4 @@
-.PHONY: up down smoke smoke-db logs produce watch inject-status inject-clear db-count
+.PHONY: up down smoke smoke-db logs produce watch consume inject-status inject-clear db-count
 
 # --env-file .env is required because Docker Compose v5+ no longer auto-reads
 # .env from the working directory. This loads POSTGRES_PASSWORD (and any future
@@ -25,6 +25,9 @@ produce:
 
 watch:
 	uv run python -m producer.watch
+
+consume:
+	uv run python -m consumer.main
 
 # Inject incidents: uv run python -m producer.inject gateway_degradation --gateway stripe-proxy --duration 2m
 inject-status:
