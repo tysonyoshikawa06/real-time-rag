@@ -1,4 +1,4 @@
-.PHONY: up down smoke smoke-db logs produce watch consume inject-status inject-clear db-count freshness
+.PHONY: up down smoke smoke-db logs produce watch consume inject-status inject-clear db-count freshness embed-demo
 
 # --env-file .env is required because Docker Compose v5+ no longer auto-reads
 # .env from the working directory. This loads POSTGRES_PASSWORD (and any future
@@ -41,3 +41,6 @@ db-count:
 
 freshness:
 	@uv run python -m consumer.freshness
+
+embed-demo:
+	uv run python -m consumer.embed_demo
