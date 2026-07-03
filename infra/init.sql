@@ -103,7 +103,7 @@ CREATE TABLE embeddings (
     created_at      timestamptz NOT NULL DEFAULT now()
 );
 
--- Postgres does NOT auto-create indexes on foreign key columns (unlike primary
--- keys). Without this index, CASCADE deletes and JOINs between transactions and
--- embeddings would do sequential scans of the embeddings table.
-CREATE INDEX idx_embeddings_transaction_id ON embeddings (transaction_id);
+-- UNIQUE enforces at-most-one embedding per transaction (the idempotency
+-- guarantee for the embedding insert path). A unique index also serves FK
+-- lookups, so no separate non-unique index is needed on this column.
+CREATE UNIQUE INDEX idx_embeddings_transaction_id ON embeddings (transaction_id);

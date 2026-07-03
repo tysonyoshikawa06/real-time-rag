@@ -2,15 +2,15 @@
 
 Offset ordering (the key guarantee):
   1. Accumulate events into a batch (up to BATCH_SIZE or BATCH_TIMEOUT_SEC).
-  2. Write the batch to Postgres in a single DB transaction.
+  2. Write the batch to Postgres in a single DB transaction:
+       a. Insert all transactions (idempotent via ON CONFLICT DO NOTHING).
+       b. Embed failure-events in one batched model call.
+       c. Insert embeddings (idempotent via ON CONFLICT (transaction_id) DO NOTHING).
   3. Only AFTER the DB commit succeeds, commit Kafka offsets.
 
-If the process crashes between steps 2 and 3, Kafka will redeliver those
-events (offsets weren't committed). The ON CONFLICT DO NOTHING in the INSERT
-makes reprocessing harmless — the duplicate rows are silently ignored.
-
-This gives at-least-once delivery. Combined with idempotent writes, the
-outcome is effectively-once: every event lands in the DB exactly once.
+If the process crashes between steps 2 and 3, Kafka redelivers those events.
+Both ON CONFLICT clauses make reprocessing harmless — duplicates are silently
+ignored, so every event lands in each table exactly once.
 
 Run directly or via `make consume`.
 """
@@ -30,6 +30,7 @@ from consumer.config import (
     KAFKA_TOPIC,
 )
 from consumer.db import connect, write_batch
+from consumer.embedder import LocalEmbedder
 
 _shutdown = False
 
@@ -51,13 +52,13 @@ def _format_event(event: dict) -> str:
     return line
 
 
-def _flush_batch(conn, consumer, batch, total_written):
+def _flush_batch(conn, consumer, batch, total_written, embedder=None):
     """Write batch to DB, then commit Kafka offsets. Returns new total."""
     if not batch:
         return total_written
 
     try:
-        write_batch(conn, batch)
+        write_batch(conn, batch, embedder=embedder)
     except Exception as e:
         print(f"  DB write failed ({len(batch)} events): {e}", file=sys.stderr)
         return total_written
@@ -71,6 +72,9 @@ def _flush_batch(conn, consumer, batch, total_written):
 
 def run():
     signal.signal(signal.SIGINT, _on_sigint)
+
+    print("Loading embedding model (first run downloads ~80 MB, then cached)...")
+    embedder = LocalEmbedder()
 
     consumer = Consumer({
         "bootstrap.servers": KAFKA_BOOTSTRAP,
@@ -114,12 +118,12 @@ def run():
 
             batch_age = time.monotonic() - batch_start
             if len(batch) >= BATCH_SIZE or (batch and batch_age >= BATCH_TIMEOUT_SEC):
-                total_written = _flush_batch(conn, consumer, batch, total_written)
+                total_written = _flush_batch(conn, consumer, batch, total_written, embedder=embedder)
                 batch = []
                 batch_start = time.monotonic()
 
     finally:
-        total_written = _flush_batch(conn, consumer, batch, total_written)
+        total_written = _flush_batch(conn, consumer, batch, total_written, embedder=embedder)
         print(f"\nClosing... ({received} received, {total_written} written to DB)")
         consumer.close()
         conn.close()
