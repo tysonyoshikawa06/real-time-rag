@@ -107,3 +107,15 @@ CREATE TABLE embeddings (
 -- guarantee for the embedding insert path). A unique index also serves FK
 -- lookups, so no separate non-unique index is needed on this column.
 CREATE UNIQUE INDEX idx_embeddings_transaction_id ON embeddings (transaction_id);
+
+-- HNSW (Hierarchical Navigable Small World) is an approximate-nearest-neighbor
+-- index: sub-linear search instead of scanning every row, at the cost of
+-- occasionally missing a true nearest neighbor. vector_cosine_ops matches the
+-- <=> (cosine distance) operator, which is what LocalEmbedder's L2-normalized
+-- vectors are meant to be compared with. Unlike IVFFlat, HNSW needs no
+-- training step over existing data and its graph absorbs new inserts
+-- gracefully — the right fit here since embeddings arrive continuously from
+-- the consumer, not as a one-time bulk load. Default m / ef_construction are
+-- fine at this scale (a handful of thousand rows).
+CREATE INDEX IF NOT EXISTS idx_embeddings_embedding_hnsw
+    ON embeddings USING hnsw (embedding vector_cosine_ops);
