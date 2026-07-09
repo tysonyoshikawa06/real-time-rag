@@ -50,6 +50,10 @@ _SEARCH_SQL = """
         t.transaction_id,
         e.embedded_text,
         t.event_timestamp,
+        t.gateway,
+        t.method,
+        t.status,
+        t.amount::float8 AS amount,
         e.embedding <=> %(query_vec)s AS distance
     FROM embeddings e
     JOIN transactions t ON t.transaction_id = e.transaction_id

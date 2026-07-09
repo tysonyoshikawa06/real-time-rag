@@ -1,0 +1,2 @@
+- [Setup facts](setup_facts.md) — confirmed uv run pytest / docker ports / graphify CLI not on PATH for this repo
+- [Feature 12 semantic_search status](feature12_semantic_search_status.md) — 2026-07-09 run: 5 failures all trace to one UUID serialization bug

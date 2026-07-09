@@ -13,9 +13,15 @@ Run with: make mcp (stdio server) or make mcp-dev (MCP inspector).
 from fastmcp import FastMCP
 
 from consumer.db import connect
-from mcp_server import stats
+from consumer.embedder import LocalEmbedder
+from mcp_server import semantic, stats
 
 mcp = FastMCP("streaming-rag")
+
+# Loading the model is the expensive part (~80MB download + init) — load it
+# once at import time and reuse it across every semantic_search call, never
+# reconstruct it per request.
+_embedder = LocalEmbedder()
 
 
 @mcp.tool
@@ -43,6 +49,47 @@ def query_stats(
             filters=filters,
             metric=metric,
             limit=limit,
+        )
+    finally:
+        conn.close()
+
+
+@mcp.tool
+def semantic_search(
+    query: str,
+    window_minutes: int = 30,
+    gateway: str | None = None,
+    k: int = 10,
+) -> dict:
+    """Search recent failure text by meaning and return the matching transactions.
+
+    Use this tool for fuzzy, meaning-based questions over messy error text —
+    things like "is anything unusual in the errors?", "find failures similar
+    to X", "are there new/novel error patterns?", or "what are the timeout
+    errors saying?" — where the right match isn't a fixed keyword or category.
+    It embeds `query` and returns the k most semantically similar failure
+    events from the last `window_minutes`, optionally narrowed to a single
+    `gateway`.
+
+    Use query_stats instead when the question is about counting, rates, or
+    top-N breakdowns (e.g. "how many failures in the last hour by gateway?" or
+    "what's the failure rate for stripe-proxy?") — that tool aggregates,
+    this tool does not.
+
+    This tool returns individual matching transactions, each with its own
+    transaction_id, similarity score, and details (gateway, method, amount,
+    status, timestamp, and the embedded failure text) — not an aggregate or
+    summary. Cite the transaction_id(s) when reporting results from this tool.
+    """
+    conn = connect()
+    try:
+        return semantic.semantic_search(
+            conn,
+            _embedder,
+            query,
+            window_minutes=window_minutes,
+            gateway=gateway,
+            k=k,
         )
     finally:
         conn.close()
