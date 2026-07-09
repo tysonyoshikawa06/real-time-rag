@@ -9,6 +9,7 @@ dependencies = [
     "pgvector>=0.3",
     "python-dotenv>=1.0",
     "sentence-transformers>=2.2",
+    "fastmcp>=2",
 ]
 
 [dependency-groups]
