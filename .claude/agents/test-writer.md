@@ -2,7 +2,7 @@
 name: test-writer
 description: Writes tests for a feature derived from the spec file — independently of the implementation, so the tests are a real check. Use when the orchestrator hands off a feature for test coverage. Maintains exactly one test file per feature.
 tools: Read, Edit, Write, Bash, Grep, Glob
-model: inherit
+model: claude-haiku-4-5-20251001
 memory: project
 skills:
   - graph-first

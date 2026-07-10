@@ -14,7 +14,7 @@ from fastmcp import FastMCP
 
 from consumer.db import connect
 from consumer.embedder import LocalEmbedder
-from mcp_server import semantic, stats
+from mcp_server import freshness, semantic, stats, transactions
 
 mcp = FastMCP("streaming-rag")
 
@@ -93,6 +93,76 @@ def semantic_search(
         )
     finally:
         conn.close()
+
+
+@mcp.tool
+def get_transactions(
+    transaction_ids: list[str] | None = None,
+    window_minutes: int | None = None,
+    status: str | None = None,
+    gateway: str | None = None,
+    method: str | None = None,
+    limit: int = 10,
+) -> dict:
+    """Fetch complete individual transaction rows, by ID or by filter.
+
+    Use this to drill down into specific transactions after a query_stats
+    aggregate or a semantic_search match — pass the transaction_id(s) you
+    want to cite and get back their full rows, including the raw error_text
+    and card_bin needed to describe them concretely. You can also use it
+    without IDs to pull a representative sample of example rows behind a
+    filter, e.g. "show me example failures from stripe-proxy in the last 10
+    minutes" (status="failure", gateway="stripe-proxy", window_minutes=10).
+
+    Pass transaction_ids for ID mode, or window_minutes/status/gateway/method
+    for filter mode — not both in the same call. In filter mode,
+    window_minutes defaults to 30 and rows come back newest first, capped at
+    `limit`. In ID mode, any requested ID with no matching row is listed in
+    missing_ids rather than causing an error.
+
+    This is the drill-down step after query_stats (which only returns
+    aggregates, never individual rows) or semantic_search (which finds
+    matches by meaning but is not meant for pulling a plain filtered sample)
+    — use those tools first to find what's interesting, then this tool to
+    see the full rows behind it.
+    """
+    conn = connect()
+    try:
+        return transactions.get_transactions(
+            conn,
+            transaction_ids=transaction_ids,
+            window_minutes=window_minutes,
+            status=status,
+            gateway=gateway,
+            method=method,
+            limit=limit,
+        )
+    finally:
+        conn.close()
+
+
+@mcp.tool
+def system_freshness(window_minutes: int = 5) -> dict:
+    """Report how current the data is, as ingest-lag percentiles.
+
+    Use this to answer or caveat "is this current?" / "how fresh is this
+    data?" style questions. It measures ingest lag — the delay between an
+    event happening (event_timestamp) and becoming queryable in Postgres
+    (ingested_at) — over the last `window_minutes` (default 5). It does not
+    measure query latency or system uptime.
+
+    Returns event_count plus p50/p95/p99/max lag in seconds and a short
+    human_readable summary line. If no events fall in the window, the
+    percentile fields come back as None with an explanatory message rather
+    than an error.
+
+    Unlike query_stats/semantic_search/get_transactions, this tool does not
+    open a database connection here: consumer.freshness.query_freshness()
+    already manages its own connection internally, so mcp_server.freshness
+    calls it directly rather than being handed one — that asymmetry is
+    intentional, not an oversight.
+    """
+    return freshness.system_freshness(window_minutes)
 
 
 if __name__ == "__main__":

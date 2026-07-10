@@ -2,7 +2,7 @@
 name: coder
 description: Implements features from the locked spec file, and debugs/fixes application code when the test-runner reports failures. Use when the orchestrator hands off a feature to build or a failure to fix. Writes and fixes application code only — never test files.
 tools: Read, Edit, Write, Bash, Grep, Glob
-model: inherit
+model: claude-sonnet-5
 memory: project
 skills:
   - graph-first

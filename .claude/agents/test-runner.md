@@ -2,7 +2,7 @@
 name: test-runner
 description: Runs the test suite (or one feature's tests) and reports results. Use after the coder and test-writer finish a feature, and again after each coder fix, until all tests pass. Read-only — runs and reports, never edits code or tests.
 tools: Read, Bash, Grep, Glob
-model: inherit
+model: claude-haiku-4-5-20251001
 memory: project
 skills:
   - graph-first
