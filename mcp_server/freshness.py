@@ -11,10 +11,11 @@ rather than reuse it.
 """
 
 from consumer.freshness import query_freshness
+from mcp_server import validation
 
-# Basic sanity cap only (Step 13 scope) — exhaustive validation is Step 14.
-# Kept tight (1h) because this tool describes *recent* ingest lag, not a
-# long historical window.
+# Kept tight (1h) because this tool describes *recent* ingest lag, not a long
+# historical window — freshness is a "now" metric, long windows stop meaning
+# current.
 _MAX_WINDOW_MINUTES = 60
 
 
@@ -28,12 +29,15 @@ def system_freshness(window_minutes: int = 5) -> dict:
     summary line. When there are no events in the window, query_freshness()
     returns None — that's not an error, so this returns event_count 0 and all
     four percentile fields as None with an explanatory human_readable line.
+    Also carries `notes`: a note if window_minutes was clamped to the max
+    (empty list otherwise).
     """
-    # Basic sanity check only — exhaustive validation is Step 14.
-    if window_minutes <= 0 or window_minutes > _MAX_WINDOW_MINUTES:
-        raise ValueError(
-            f"window_minutes must be > 0 and <= {_MAX_WINDOW_MINUTES}, got {window_minutes}"
-        )
+    notes: list[str] = []
+    window_minutes, note = validation.clamp_positive_int(
+        "window_minutes", window_minutes, default=5, max_value=_MAX_WINDOW_MINUTES
+    )
+    if note:
+        notes.append(note)
 
     stats = query_freshness(window=f"{window_minutes} minutes")
 
@@ -49,6 +53,7 @@ def system_freshness(window_minutes: int = 5) -> dict:
                 f"No events in the last {window_minutes} minutes — "
                 "freshness cannot be computed."
             ),
+            "notes": notes,
         }
 
     p50 = round(stats["p50"], 1)
@@ -68,4 +73,5 @@ def system_freshness(window_minutes: int = 5) -> dict:
             f"Data is current as of ~{p50}s (p50) over the last "
             f"{window_minutes} minutes ({event_count:,} events)."
         ),
+        "notes": notes,
     }

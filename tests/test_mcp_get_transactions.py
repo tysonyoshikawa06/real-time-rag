@@ -470,43 +470,27 @@ def test_id_mode_over_100_ids_raises_value_error(too_many):
     assert "100" in message or "cap" in message or "limit" in message
 
 
-@pytest.mark.parametrize("bad_window", [0, -1, -30, 361, 1000])
+@pytest.mark.parametrize("bad_window", [0, -1, -30])
 def test_filter_mode_window_out_of_bounds_raises_value_error(bad_window):
-    """window_minutes outside [1, 360] raises ValueError."""
+    """window_minutes must be positive; > 1440 clamps instead of rejecting."""
     with pytest.raises(ValueError) as excinfo:
         get_transactions(_ForbiddenConn(), window_minutes=bad_window)
     message = str(excinfo.value).lower()
-    assert "window" in message or "360" in message
+    assert "window" in message or "positive" in message
 
 
-@pytest.mark.parametrize("bad_limit", [0, -1, -10, 101, 1000])
+@pytest.mark.parametrize("bad_limit", [0, -1, -10])
 def test_filter_mode_limit_out_of_bounds_raises_value_error(bad_limit):
-    """limit outside [1, 100] raises ValueError."""
+    """limit must be positive; > 100 clamps instead of rejecting."""
     with pytest.raises(ValueError) as excinfo:
         get_transactions(_ForbiddenConn(), limit=bad_limit)
     message = str(excinfo.value).lower()
-    assert "limit" in message or "100" in message or "bound" in message
+    assert "limit" in message or "positive" in message
 
 
 # --------------------------------------------------------------------------
-# Edge case — unmatched filter values yield zero rows, not errors
+# Edge case — unmatched filter values with valid enums yield zero rows, not errors
 # --------------------------------------------------------------------------
-
-
-def test_unmatched_status_filter_yields_zero_rows(seeded_conn):
-    conn, ids = seeded_conn
-    # There is no 'unknown' status in the CHECK constraint
-    result = get_transactions(conn, status="unknown")
-    assert result["count"] == 0
-    assert result["rows"] == []
-
-
-def test_unmatched_method_filter_yields_zero_rows(seeded_conn):
-    conn, ids = seeded_conn
-    # There is no 'crypto' method in the CHECK constraint
-    result = get_transactions(conn, method="crypto")
-    assert result["count"] == 0
-    assert result["rows"] == []
 
 
 def test_unmatched_gateway_filter_yields_zero_rows(seeded_conn):
@@ -707,3 +691,277 @@ def test_mcp_tool_end_to_end_filter_mode():
     assert payload["missing_ids"] == []
     # Should be JSON serializable
     json.dumps(payload)
+
+
+# --------------------------------------------------------------------------
+# Step 14: Input validation + limits — notes field + clamping behavior
+# --------------------------------------------------------------------------
+
+
+def test_valid_defaults_return_empty_notes(seeded_conn):
+    """Regression: default params should return notes: []."""
+    conn, ids = seeded_conn
+    result = get_transactions(conn, transaction_ids=[ids["tx1"]])
+
+    assert "notes" in result
+    assert result["notes"] == []
+
+
+def test_valid_filter_mode_return_empty_notes(seeded_conn):
+    """Regression: in-range filter mode params should return notes: []."""
+    conn, ids = seeded_conn
+    result = get_transactions(conn, window_minutes=60, limit=50, gateway=GW_A)
+
+    assert "notes" in result
+    assert result["notes"] == []
+
+
+def test_mode_exclusivity_ids_and_window_minutes_raises():
+    """Behavior #22: transaction_ids + window_minutes is rejected with exact message."""
+    fake_ids = [str(uuid.uuid4())]
+    with pytest.raises(ValueError) as excinfo:
+        get_transactions(_ForbiddenConn(), transaction_ids=fake_ids, window_minutes=10)
+    # Exact message from spec Behavior #22
+    expected_msg = (
+        "get_transactions accepts either transaction_ids OR filter params "
+        "(window_minutes/status/gateway/method), not both. Pass IDs to look up specific "
+        "rows, or filters to search."
+    )
+    assert expected_msg in str(excinfo.value)
+
+
+def test_mode_exclusivity_ids_and_status_raises():
+    """Behavior #22: transaction_ids + status is rejected with exact message."""
+    fake_ids = [str(uuid.uuid4())]
+    with pytest.raises(ValueError) as excinfo:
+        get_transactions(_ForbiddenConn(), transaction_ids=fake_ids, status="success")
+    expected_msg = (
+        "get_transactions accepts either transaction_ids OR filter params "
+        "(window_minutes/status/gateway/method), not both. Pass IDs to look up specific "
+        "rows, or filters to search."
+    )
+    assert expected_msg in str(excinfo.value)
+
+
+def test_mode_exclusivity_ids_and_gateway_raises():
+    """Behavior #22: transaction_ids + gateway is rejected with exact message."""
+    fake_ids = [str(uuid.uuid4())]
+    with pytest.raises(ValueError) as excinfo:
+        get_transactions(_ForbiddenConn(), transaction_ids=fake_ids, gateway="stripe-proxy")
+    expected_msg = (
+        "get_transactions accepts either transaction_ids OR filter params "
+        "(window_minutes/status/gateway/method), not both. Pass IDs to look up specific "
+        "rows, or filters to search."
+    )
+    assert expected_msg in str(excinfo.value)
+
+
+def test_mode_exclusivity_ids_and_method_raises():
+    """Behavior #22: transaction_ids + method is rejected with exact message."""
+    fake_ids = [str(uuid.uuid4())]
+    with pytest.raises(ValueError) as excinfo:
+        get_transactions(_ForbiddenConn(), transaction_ids=fake_ids, method="card")
+    expected_msg = (
+        "get_transactions accepts either transaction_ids OR filter params "
+        "(window_minutes/status/gateway/method), not both. Pass IDs to look up specific "
+        "rows, or filters to search."
+    )
+    assert expected_msg in str(excinfo.value)
+
+
+def test_id_mode_too_many_ids_raises():
+    """Behavior #24: transaction_ids > 100 rejects with message naming the cap."""
+    many_ids = [str(uuid.uuid4()) for _ in range(101)]
+    with pytest.raises(ValueError) as excinfo:
+        get_transactions(_ForbiddenConn(), transaction_ids=many_ids)
+    message = str(excinfo.value).lower()
+    assert "100" in message
+    assert "reject" in message or "cap" in message or "too many" in message.lower()
+
+
+def test_id_mode_500_ids_raises():
+    """Behavior #24: transaction_ids with 500 entries raises (too many, not clamped)."""
+    many_ids = [str(uuid.uuid4()) for _ in range(500)]
+    with pytest.raises(ValueError) as excinfo:
+        get_transactions(_ForbiddenConn(), transaction_ids=many_ids)
+    message = str(excinfo.value).lower()
+    # Should mention the cap (100) and that we're rejecting
+    assert "100" in message
+
+
+def test_id_mode_malformed_uuid_raises():
+    """Behavior #24: malformed UUID in list is rejected, naming the malformed entry."""
+    valid_id = str(uuid.uuid4())
+    bad_id = "not-a-uuid"
+    with pytest.raises(ValueError) as excinfo:
+        get_transactions(_ForbiddenConn(), transaction_ids=[bad_id, valid_id])
+    message = str(excinfo.value)
+    # Should name the malformed ID
+    assert bad_id in message or "not-a-uuid" in message
+
+
+def test_id_mode_valid_but_absent_uuid_returns_missing_ids(seeded_conn):
+    """Behavior #24: valid-but-absent UUID returns found rows + missing_ids, not error."""
+    conn, ids = seeded_conn
+    absent_id = str(uuid.uuid4())
+    # Pass one existing ID and one absent ID
+    result = get_transactions(conn, transaction_ids=[ids["tx1"], absent_id])
+
+    assert result["count"] == 1  # Only one found
+    assert len(result["rows"]) == 1
+    assert result["rows"][0]["transaction_id"] == ids["tx1"]
+    assert absent_id in result["missing_ids"]
+
+
+def test_filter_mode_no_args_defaults(seeded_conn):
+    """Behavior #23: no args at all → filter mode with window 30, limit 10."""
+    conn, ids = seeded_conn
+    result = get_transactions(conn)
+
+    assert result["mode"] == "filter"
+    assert result["window_minutes"] == 30
+    assert result["limit"] == 10
+    assert result["status"] is None
+    assert result["gateway"] is None
+    assert result["method"] is None
+
+
+def test_filter_mode_window_non_integer_raises():
+    """Behavior #25: window_minutes must be a positive integer."""
+    with pytest.raises(ValueError) as excinfo:
+        get_transactions(_ForbiddenConn(), window_minutes=3.5)
+    assert "integer" in str(excinfo.value).lower()
+
+
+def test_filter_mode_window_zero_raises():
+    """Behavior #25: window_minutes=0 rejects (never clamps)."""
+    with pytest.raises(ValueError) as excinfo:
+        get_transactions(_ForbiddenConn(), window_minutes=0)
+    assert "positive" in str(excinfo.value).lower()
+
+
+def test_filter_mode_window_negative_raises():
+    """Behavior #25: window_minutes<0 rejects (never clamps)."""
+    with pytest.raises(ValueError) as excinfo:
+        get_transactions(_ForbiddenConn(), window_minutes=-5)
+    assert "positive" in str(excinfo.value).lower()
+
+
+def test_filter_mode_window_boolean_raises():
+    """Behavior #25: window_minutes=True/False rejects explicitly."""
+    with pytest.raises(ValueError):
+        get_transactions(_ForbiddenConn(), window_minutes=True)
+
+    with pytest.raises(ValueError):
+        get_transactions(_ForbiddenConn(), window_minutes=False)
+
+
+def test_filter_mode_limit_non_integer_raises():
+    """Behavior #25: limit must be a positive integer."""
+    with pytest.raises(ValueError) as excinfo:
+        get_transactions(_ForbiddenConn(), limit=2.5)
+    assert "integer" in str(excinfo.value).lower()
+
+
+def test_filter_mode_limit_zero_raises():
+    """Behavior #25: limit=0 rejects (never clamps)."""
+    with pytest.raises(ValueError) as excinfo:
+        get_transactions(_ForbiddenConn(), limit=0)
+    assert "positive" in str(excinfo.value).lower()
+
+
+def test_filter_mode_limit_negative_raises():
+    """Behavior #25: limit<0 rejects (never clamps)."""
+    with pytest.raises(ValueError) as excinfo:
+        get_transactions(_ForbiddenConn(), limit=-10)
+    assert "positive" in str(excinfo.value).lower()
+
+
+def test_filter_mode_limit_boolean_raises():
+    """Behavior #25: limit=True/False rejects explicitly."""
+    with pytest.raises(ValueError):
+        get_transactions(_ForbiddenConn(), limit=True)
+
+    with pytest.raises(ValueError):
+        get_transactions(_ForbiddenConn(), limit=False)
+
+
+def test_filter_mode_status_invalid_raises():
+    """Behavior #25: status value must be in {success, failure}."""
+    with pytest.raises(ValueError) as excinfo:
+        get_transactions(_ForbiddenConn(), status="unknown")
+    message = str(excinfo.value)
+    assert "success" in message.lower()
+    assert "failure" in message.lower()
+
+
+def test_filter_mode_method_invalid_raises():
+    """Behavior #25: method value must be in {card, ach, wallet}."""
+    with pytest.raises(ValueError) as excinfo:
+        get_transactions(_ForbiddenConn(), method="crypto")
+    message = str(excinfo.value)
+    assert "card" in message.lower()
+    assert "ach" in message.lower()
+    assert "wallet" in message.lower()
+
+
+def test_filter_mode_window_clamped_to_1440_with_note(seeded_conn):
+    """Behavior #25: window_minutes > 1440 clamps to 1440 with a note."""
+    conn, ids = seeded_conn
+    result = get_transactions(conn, window_minutes=5000)
+
+    assert result["window_minutes"] == 1440
+    assert len(result["notes"]) > 0
+    # Note should mention the window was capped
+    note_text = " ".join(result["notes"]).lower()
+    assert "window" in note_text
+    assert "capped" in note_text or "cap" in note_text or "exceeded" in note_text
+
+
+def test_filter_mode_limit_clamped_to_100_with_note(seeded_conn):
+    """Behavior #25: limit > 100 clamps to 100 with a note."""
+    conn, ids = seeded_conn
+    result = get_transactions(conn, limit=99999)
+
+    assert result["limit"] == 100
+    assert len(result["notes"]) > 0
+    # Note should mention the limit was capped
+    note_text = " ".join(result["notes"]).lower()
+    assert "limit" in note_text
+    assert "capped" in note_text or "cap" in note_text or "exceeded" in note_text
+
+
+def test_filter_mode_window_boundary_1_is_valid(seeded_conn):
+    """Edge case: window_minutes=1 is the minimum and should pass without clamping."""
+    conn, ids = seeded_conn
+    result = get_transactions(conn, window_minutes=1)
+
+    assert result["window_minutes"] == 1
+    assert result["notes"] == []
+
+
+def test_filter_mode_window_boundary_1440_is_valid(seeded_conn):
+    """Edge case: window_minutes=1440 is the maximum and should pass without clamping."""
+    conn, ids = seeded_conn
+    result = get_transactions(conn, window_minutes=1440)
+
+    assert result["window_minutes"] == 1440
+    assert result["notes"] == []
+
+
+def test_filter_mode_limit_boundary_1_is_valid(seeded_conn):
+    """Edge case: limit=1 is the minimum and should pass without clamping."""
+    conn, ids = seeded_conn
+    result = get_transactions(conn, limit=1)
+
+    assert result["limit"] == 1
+    assert result["notes"] == []
+
+
+def test_filter_mode_limit_boundary_100_is_valid(seeded_conn):
+    """Edge case: limit=100 is the maximum and should pass without clamping."""
+    conn, ids = seeded_conn
+    result = get_transactions(conn, limit=100)
+
+    assert result["limit"] == 100
+    assert result["notes"] == []

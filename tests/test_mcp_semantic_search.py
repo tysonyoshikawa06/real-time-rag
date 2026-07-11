@@ -377,16 +377,18 @@ def test_empty_or_whitespace_query_raises_before_embed_or_search(bad_query):
         semantic_search(_ForbiddenConn(), _ForbiddenEmbedder(), bad_query)
 
 
-@pytest.mark.parametrize("bad_window", [0, -1, -100, 1441, 5000])
+@pytest.mark.parametrize("bad_window", [0, -1, -100])
 def test_window_minutes_out_of_bounds_raises_before_embed_or_search(bad_window):
+    """window_minutes must be positive; > 1440 clamps instead of rejecting."""
     with pytest.raises(ValueError):
         semantic_search(
             _ForbiddenConn(), _ForbiddenEmbedder(), QUERY, window_minutes=bad_window
         )
 
 
-@pytest.mark.parametrize("bad_k", [0, -1, -50, 51, 1000])
+@pytest.mark.parametrize("bad_k", [0, -1, -50])
 def test_k_out_of_bounds_raises_before_embed_or_search(bad_k):
+    """k must be positive; > 50 clamps instead of rejecting."""
     with pytest.raises(ValueError):
         semantic_search(_ForbiddenConn(), _ForbiddenEmbedder(), QUERY, k=bad_k)
 
@@ -477,3 +479,206 @@ def test_mcp_tool_end_to_end_returns_documented_shape():
     assert payload["count"] == 0
     assert payload["matches"] == []
     assert payload["path"] in ("exact", "hnsw")
+
+
+# --------------------------------------------------------------------------
+# Step 14: Input validation + limits — notes field + clamping behavior
+# --------------------------------------------------------------------------
+
+
+def test_valid_defaults_return_empty_notes(seeded):
+    """Regression: default params should return notes: []."""
+    conn, _ids = seeded
+    result = semantic_search(conn, FakeEmbedder(), QUERY, gateway=GATEWAY)
+
+    assert "notes" in result
+    assert result["notes"] == []
+
+
+def test_valid_in_range_values_return_empty_notes(seeded):
+    """Regression: in-range window_minutes and k should return notes: []."""
+    conn, _ids = seeded
+    result = semantic_search(
+        conn,
+        FakeEmbedder(),
+        QUERY,
+        window_minutes=100,
+        k=20,
+        gateway=GATEWAY,
+    )
+
+    assert "notes" in result
+    assert result["notes"] == []
+
+
+def test_query_empty_string_raises_value_error():
+    """Behavior #17: empty query raises ValueError."""
+    with pytest.raises(ValueError) as excinfo:
+        semantic_search(_ForbiddenConn(), _ForbiddenEmbedder(), "")
+    assert "query" in str(excinfo.value).lower() or "empty" in str(excinfo.value).lower()
+
+
+def test_query_whitespace_raises_value_error():
+    """Behavior #17: whitespace-only query raises ValueError."""
+    with pytest.raises(ValueError) as excinfo:
+        semantic_search(_ForbiddenConn(), _ForbiddenEmbedder(), "   ")
+    assert "query" in str(excinfo.value).lower() or "empty" in str(excinfo.value).lower()
+
+
+def test_query_tab_newline_raises_value_error():
+    """Behavior #17: tab/newline-only query raises ValueError."""
+    with pytest.raises(ValueError):
+        semantic_search(_ForbiddenConn(), _ForbiddenEmbedder(), "\t\n")
+
+
+def test_query_truncated_to_2000_chars_with_note(seeded):
+    """Behavior #17: query > 2000 chars truncated to 2000 with a note."""
+    conn, _ids = seeded
+    long_query = "a" * 2500  # 2500 chars
+    result = semantic_search(conn, FakeEmbedder(), long_query, gateway=NO_SUCH_GATEWAY)
+
+    assert len(result["query"]) == 2000
+    assert len(result["notes"]) > 0
+    # Note should mention truncation
+    note_text = " ".join(result["notes"]).lower()
+    assert "truncat" in note_text or "limit" in note_text
+
+
+def test_window_minutes_non_integer_raises_value_error():
+    """Behavior #18: window_minutes must be a positive integer."""
+    with pytest.raises(ValueError) as excinfo:
+        semantic_search(_ForbiddenConn(), _ForbiddenEmbedder(), QUERY, window_minutes=3.5)
+    assert "integer" in str(excinfo.value).lower()
+
+
+def test_window_minutes_zero_raises_value_error():
+    """Behavior #18: window_minutes=0 rejects (never clamps)."""
+    with pytest.raises(ValueError) as excinfo:
+        semantic_search(_ForbiddenConn(), _ForbiddenEmbedder(), QUERY, window_minutes=0)
+    assert "positive" in str(excinfo.value).lower()
+
+
+def test_window_minutes_negative_raises_value_error():
+    """Behavior #18: window_minutes<0 rejects (never clamps)."""
+    with pytest.raises(ValueError) as excinfo:
+        semantic_search(_ForbiddenConn(), _ForbiddenEmbedder(), QUERY, window_minutes=-5)
+    assert "positive" in str(excinfo.value).lower()
+
+
+def test_window_minutes_boolean_raises_value_error():
+    """Behavior #18: window_minutes=True/False rejects explicitly."""
+    with pytest.raises(ValueError):
+        semantic_search(_ForbiddenConn(), _ForbiddenEmbedder(), QUERY, window_minutes=True)
+
+    with pytest.raises(ValueError):
+        semantic_search(_ForbiddenConn(), _ForbiddenEmbedder(), QUERY, window_minutes=False)
+
+
+def test_k_non_integer_raises_value_error():
+    """Behavior #19: k must be a positive integer."""
+    with pytest.raises(ValueError) as excinfo:
+        semantic_search(_ForbiddenConn(), _ForbiddenEmbedder(), QUERY, k=2.5)
+    assert "integer" in str(excinfo.value).lower()
+
+
+def test_k_zero_raises_value_error():
+    """Behavior #19: k=0 rejects (never clamps)."""
+    with pytest.raises(ValueError) as excinfo:
+        semantic_search(_ForbiddenConn(), _ForbiddenEmbedder(), QUERY, k=0)
+    assert "positive" in str(excinfo.value).lower()
+
+
+def test_k_negative_raises_value_error():
+    """Behavior #19: k<0 rejects (never clamps)."""
+    with pytest.raises(ValueError) as excinfo:
+        semantic_search(_ForbiddenConn(), _ForbiddenEmbedder(), QUERY, k=-5)
+    assert "positive" in str(excinfo.value).lower()
+
+
+def test_k_boolean_raises_value_error():
+    """Behavior #19: k=True/False rejects explicitly."""
+    with pytest.raises(ValueError):
+        semantic_search(_ForbiddenConn(), _ForbiddenEmbedder(), QUERY, k=True)
+
+    with pytest.raises(ValueError):
+        semantic_search(_ForbiddenConn(), _ForbiddenEmbedder(), QUERY, k=False)
+
+
+def test_k_clamped_to_50_with_note(seeded):
+    """Behavior #19: k > 50 clamps to 50 with a note."""
+    conn, _ids = seeded
+    result = semantic_search(conn, FakeEmbedder(), QUERY, k=1000, gateway=NO_SUCH_GATEWAY)
+
+    assert result["k"] == 50
+    assert len(result["notes"]) > 0
+    # Note should mention k was capped
+    note_text = " ".join(result["notes"]).lower()
+    assert "k" in note_text
+    assert "capped" in note_text or "cap" in note_text or "exceeded" in note_text
+
+
+def test_window_minutes_clamped_to_1440_with_note(seeded):
+    """Behavior #18: window_minutes > 1440 clamps to 1440 with a note (changed from reject)."""
+    conn, _ids = seeded
+    result = semantic_search(
+        conn, FakeEmbedder(), QUERY, window_minutes=5000, gateway=NO_SUCH_GATEWAY
+    )
+
+    assert result["window_minutes"] == 1440
+    assert len(result["notes"]) > 0
+    # Note should mention the window was capped
+    note_text = " ".join(result["notes"]).lower()
+    assert "window" in note_text
+    assert "capped" in note_text or "cap" in note_text or "exceeded" in note_text
+
+
+def test_window_minutes_boundary_1_is_valid(seeded):
+    """Edge case: window_minutes=1 is the minimum and should pass without clamping."""
+    conn, _ids = seeded
+    result = semantic_search(
+        conn, FakeEmbedder(), QUERY, window_minutes=1, gateway=NO_SUCH_GATEWAY
+    )
+
+    assert result["window_minutes"] == 1
+    assert result["notes"] == []
+
+
+def test_window_minutes_boundary_1440_is_valid(seeded):
+    """Edge case: window_minutes=1440 is the maximum and should pass without clamping."""
+    conn, _ids = seeded
+    result = semantic_search(
+        conn, FakeEmbedder(), QUERY, window_minutes=1440, gateway=NO_SUCH_GATEWAY
+    )
+
+    assert result["window_minutes"] == 1440
+    assert result["notes"] == []
+
+
+def test_k_boundary_1_is_valid(seeded):
+    """Edge case: k=1 is the minimum and should pass without clamping."""
+    conn, _ids = seeded
+    result = semantic_search(conn, FakeEmbedder(), QUERY, k=1, gateway=NO_SUCH_GATEWAY)
+
+    assert result["k"] == 1
+    assert result["notes"] == []
+
+
+def test_k_boundary_50_is_valid(seeded):
+    """Edge case: k=50 is the maximum and should pass without clamping."""
+    conn, _ids = seeded
+    result = semantic_search(conn, FakeEmbedder(), QUERY, k=50, gateway=NO_SUCH_GATEWAY)
+
+    assert result["k"] == 50
+    assert result["notes"] == []
+
+
+def test_query_exactly_2000_chars_not_truncated(seeded):
+    """Edge case: query exactly 2000 chars should not be truncated or noted."""
+    conn, _ids = seeded
+    query_2000 = "a" * 2000
+    result = semantic_search(conn, FakeEmbedder(), query_2000, gateway=NO_SUCH_GATEWAY)
+
+    assert result["query"] == query_2000
+    # Notes may exist for other reasons, but should not have truncation note
+    note_text = " ".join(result["notes"]).lower()
+    assert "truncat" not in note_text

@@ -32,3 +32,13 @@ Test patterns that worked for tests/test_mcp_query_stats.py (spec 11B) and gener
 - Query directly via raw psycopg to get the stable tx_now: `cur.execute("SELECT now()::timestamptz AS now"); tx_now = cur.fetchone()["now"]`. Use this baseline for all rows in a test so relative timedeltas are consistent.
 - Pass lag values as list to a seed function, insert one row per lag value with precise timedeltas: `event_ts + timedelta(seconds=lag_sec)`. Then assert `percentile_cont` output via `round(value, 1)` matching the expected distribution (e.g. [0.5, 1.0, 1.5, 2.0, 2.5, 3.0] → p50=1.75, p99≈2.985).
 - For testing "no events in window" case: insert a row with event_timestamp outside the query window (e.g. 10 min ago for a 5-min window test), verify event_count=0 and all percentile fields are None (not an error, per spec).
+
+**Input validation + clamping test patterns (Step 14):**
+- All tools gain a `notes: list[str]` key in return dict. Regression tests: valid defaults + in-range values should have `notes == []`.
+- Clamp tests verify: a) the value is clamped to the max, b) `len(result["notes"]) > 0` is true, c) clamp note text contains the field name and some clamp verb ("capped", "exceeded", etc.), d) the clamped value respects the stated bound. Use `" ".join(result["notes"]).lower()` to check note text case-insensitively.
+- Reject (non-clamping) numeric tests: all four tools reject window_minutes=0/-5/3.5/True/False. Use parametrize with multiple bad values; all should raise ValueError with "positive" or "integer" in message. Booleans are critical: `True`/`False` are instances of `int` in Python, so validation must explicitly reject them.
+- Enum reject tests (e.g. `status="maybe"` for query_stats): use `_ForbiddenConn()` to ensure validation happens before SQL. Rejection message should list valid enum values (use lowercase assertion with `.lower()` for robustness).
+- UUID validation test (get_transactions): pass `[bad_id, valid_id]` list; assert the bad_id name appears in the error message. Test absent-but-valid UUID too: should return `found rows + missing_ids`, never error.
+- Exact message tests (e.g. get_transactions mutual exclusivity): copy the spec's required message verbatim, use `assert expected_msg in str(excinfo.value)` (substring match in case surrounding context is added).
+- Boundary value tests (min/max edge cases): test=1, test=max_allowed should NOT clamp or note. Use same seeded data, assert `result["notes"] == []`.
+- For truncation/limited-length (semantic_search query), test exactly-at-limit (2000 chars) and over-limit (2500 chars); assert truncated result is exactly the limit.

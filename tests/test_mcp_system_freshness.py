@@ -372,15 +372,15 @@ def test_human_readable_with_no_events(empty_window_committed_conn):
 # --------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("bad_window", [0, -1, -30, 61, 100, 1000])
+@pytest.mark.parametrize("bad_window", [0, -1, -30])
 def test_window_minutes_out_of_bounds_raises_value_error(bad_window):
-    """window_minutes outside [1, 60] raises ValueError."""
+    """window_minutes must be positive; > 60 clamps instead of rejecting."""
     # Pass a fake query_freshness that should NOT be called
     # (but we don't use it in this test since validation happens first)
     with pytest.raises(ValueError) as excinfo:
         system_freshness(window_minutes=bad_window)
     message = str(excinfo.value).lower()
-    assert "window" in message or "60" in message or "bound" in message
+    assert "window" in message or "positive" in message
 
 
 def test_window_minutes_boundary_1_is_valid(seeded_committed_conn_with_lags):
@@ -429,6 +429,7 @@ def test_return_shape_with_events_has_all_fields(seeded_committed_conn_with_lags
         "p99_seconds",
         "max_seconds",
         "human_readable",
+        "notes",
     }
     assert set(result.keys()) == required_fields
     assert result["window_minutes"] == 5
@@ -447,6 +448,7 @@ def test_return_shape_with_no_events_has_all_fields(empty_window_committed_conn)
         "p99_seconds",
         "max_seconds",
         "human_readable",
+        "notes",
     }
     assert set(result.keys()) == required_fields
     assert result["window_minutes"] == 5
@@ -609,3 +611,87 @@ def test_system_freshness_uses_same_sql_as_query_freshness(seeded_committed_conn
         assert result_mcp["p95_seconds"] == round(result_direct["p95"], 1)
         assert result_mcp["p99_seconds"] == round(result_direct["p99"], 1)
         assert result_mcp["max_seconds"] == round(result_direct["max"], 1)
+
+
+# --------------------------------------------------------------------------
+# Step 14: Input validation + limits — notes field + clamping behavior
+# --------------------------------------------------------------------------
+
+
+def test_valid_defaults_return_empty_notes(seeded_committed_conn_with_lags):
+    """Regression: default params should return notes: []."""
+    conn, ids = seeded_committed_conn_with_lags
+    result = system_freshness()
+
+    assert "notes" in result
+    assert result["notes"] == []
+
+
+def test_valid_in_range_value_return_empty_notes(seeded_committed_conn_with_lags):
+    """Regression: in-range window_minutes should return notes: []."""
+    conn, ids = seeded_committed_conn_with_lags
+    result = system_freshness(window_minutes=30)
+
+    assert "notes" in result
+    assert result["notes"] == []
+
+
+def test_window_minutes_non_integer_raises():
+    """Behavior #27: window_minutes must be a positive integer."""
+    with pytest.raises(ValueError) as excinfo:
+        system_freshness(window_minutes=3.5)
+    assert "integer" in str(excinfo.value).lower()
+
+
+def test_window_minutes_zero_raises():
+    """Behavior #27: window_minutes=0 rejects (never clamps)."""
+    with pytest.raises(ValueError) as excinfo:
+        system_freshness(window_minutes=0)
+    assert "positive" in str(excinfo.value).lower()
+
+
+def test_window_minutes_negative_raises():
+    """Behavior #27: window_minutes<0 rejects (never clamps)."""
+    with pytest.raises(ValueError) as excinfo:
+        system_freshness(window_minutes=-5)
+    assert "positive" in str(excinfo.value).lower()
+
+
+def test_window_minutes_boolean_raises():
+    """Behavior #27: window_minutes=True/False rejects explicitly."""
+    with pytest.raises(ValueError):
+        system_freshness(window_minutes=True)
+
+    with pytest.raises(ValueError):
+        system_freshness(window_minutes=False)
+
+
+def test_window_minutes_clamped_to_60_with_note(seeded_committed_conn_with_lags):
+    """Behavior #27: window_minutes > 60 clamps to 60 with a note (changed from reject)."""
+    conn, ids = seeded_committed_conn_with_lags
+    result = system_freshness(window_minutes=600)
+
+    assert result["window_minutes"] == 60
+    assert len(result["notes"]) > 0
+    # Note should mention the window was capped
+    note_text = " ".join(result["notes"]).lower()
+    assert "window" in note_text
+    assert "capped" in note_text or "cap" in note_text or "exceeded" in note_text
+
+
+def test_window_minutes_boundary_1_is_valid(seeded_committed_conn_with_lags):
+    """Edge case: window_minutes=1 is the minimum and should pass without clamping."""
+    conn, ids = seeded_committed_conn_with_lags
+    result = system_freshness(window_minutes=1)
+
+    assert result["window_minutes"] == 1
+    assert result["notes"] == []
+
+
+def test_window_minutes_boundary_60_is_valid(seeded_committed_conn_with_lags):
+    """Edge case: window_minutes=60 is the maximum and should pass without clamping."""
+    conn, ids = seeded_committed_conn_with_lags
+    result = system_freshness(window_minutes=60)
+
+    assert result["window_minutes"] == 60
+    assert result["notes"] == []

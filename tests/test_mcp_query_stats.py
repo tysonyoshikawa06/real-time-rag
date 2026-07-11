@@ -466,3 +466,205 @@ def test_mcp_tool_end_to_end_returns_documented_shape():
     assert payload["filters"] == {"merchant": NO_SUCH_MERCHANT}
     assert payload["total_events"] == 0
     assert payload["rows"] == [{"count": 0}]
+
+
+# --------------------------------------------------------------------------
+# Step 14: Input validation + limits — notes field + clamping behavior
+# --------------------------------------------------------------------------
+
+
+def test_valid_defaults_return_empty_notes(seeded_conn):
+    """Regression: default params should return notes: []."""
+    conn, _ = seeded_conn
+    result = query_stats(conn, filters={"merchant": MERCHANT})
+
+    assert "notes" in result
+    assert result["notes"] == []
+
+
+def test_valid_in_range_values_return_empty_notes(seeded_conn):
+    """Regression: in-range window_minutes and limit should return notes: []."""
+    conn, _ = seeded_conn
+    result = query_stats(
+        conn,
+        window_minutes=60,
+        limit=50,
+        filters={"merchant": MERCHANT},
+    )
+
+    assert "notes" in result
+    assert result["notes"] == []
+
+
+def test_group_by_invalid_column_raises_value_error():
+    """Behavior #12: group_by must be in allowed columns."""
+    with pytest.raises(ValueError) as excinfo:
+        query_stats(_ForbiddenConn(), group_by="banana")
+    message = str(excinfo.value)
+    # Message should list valid columns
+    for allowed in ("method", "status", "gateway", "merchant"):
+        assert allowed in message
+
+
+def test_filter_key_invalid_raises_value_error():
+    """Behavior #12: filter keys must be in allowed columns."""
+    with pytest.raises(ValueError) as excinfo:
+        query_stats(_ForbiddenConn(), filters={"amount": "10"})
+    message = str(excinfo.value)
+    # Message should list valid keys
+    for allowed in ("method", "status", "gateway", "merchant"):
+        assert allowed in message
+
+
+def test_filter_status_invalid_value_raises_value_error():
+    """Behavior #13: status filter value must be in {success, failure}."""
+    with pytest.raises(ValueError) as excinfo:
+        query_stats(_ForbiddenConn(), filters={"status": "maybe"})
+    message = str(excinfo.value)
+    # Message should list valid statuses
+    assert "success" in message.lower()
+    assert "failure" in message.lower()
+
+
+def test_filter_method_invalid_value_raises_value_error():
+    """Behavior #13: method filter value must be in {card, ach, wallet}."""
+    with pytest.raises(ValueError) as excinfo:
+        query_stats(_ForbiddenConn(), filters={"method": "crypto"})
+    message = str(excinfo.value)
+    # Message should list valid methods
+    assert "card" in message.lower()
+    assert "ach" in message.lower()
+    assert "wallet" in message.lower()
+
+
+def test_metric_invalid_raises_value_error():
+    """Behavior #14: metric must be in {count, failure_rate}."""
+    with pytest.raises(ValueError) as excinfo:
+        query_stats(_ForbiddenConn(), metric="median")
+    message = str(excinfo.value)
+    assert "count" in message.lower()
+    assert "failure_rate" in message.lower()
+
+
+def test_window_minutes_non_integer_raises_value_error():
+    """Behavior #11: window_minutes must be a positive integer."""
+    with pytest.raises(ValueError) as excinfo:
+        query_stats(_ForbiddenConn(), window_minutes=3.5)
+    assert "integer" in str(excinfo.value).lower()
+
+
+def test_window_minutes_zero_raises_value_error():
+    """Behavior #11: window_minutes=0 rejects (never clamps)."""
+    with pytest.raises(ValueError) as excinfo:
+        query_stats(_ForbiddenConn(), window_minutes=0)
+    assert "positive" in str(excinfo.value).lower()
+
+
+def test_window_minutes_negative_raises_value_error():
+    """Behavior #11: window_minutes<0 rejects (never clamps)."""
+    with pytest.raises(ValueError) as excinfo:
+        query_stats(_ForbiddenConn(), window_minutes=-5)
+    assert "positive" in str(excinfo.value).lower()
+
+
+def test_window_minutes_boolean_raises_value_error():
+    """Behavior #11: window_minutes=True/False rejects explicitly."""
+    # In Python, bool is a subclass of int, so True==1 and False==0.
+    # Spec: "Booleans are not accepted as integers... reject True/False explicitly."
+    with pytest.raises(ValueError):
+        query_stats(_ForbiddenConn(), window_minutes=True)
+
+    with pytest.raises(ValueError):
+        query_stats(_ForbiddenConn(), window_minutes=False)
+
+
+def test_limit_non_integer_raises_value_error():
+    """Behavior #15: limit must be a positive integer."""
+    with pytest.raises(ValueError) as excinfo:
+        query_stats(_ForbiddenConn(), limit=2.5)
+    assert "integer" in str(excinfo.value).lower()
+
+
+def test_limit_zero_raises_value_error():
+    """Behavior #15: limit=0 rejects (never clamps)."""
+    with pytest.raises(ValueError) as excinfo:
+        query_stats(_ForbiddenConn(), limit=0)
+    assert "positive" in str(excinfo.value).lower()
+
+
+def test_limit_negative_raises_value_error():
+    """Behavior #15: limit<0 rejects (never clamps)."""
+    with pytest.raises(ValueError) as excinfo:
+        query_stats(_ForbiddenConn(), limit=-10)
+    assert "positive" in str(excinfo.value).lower()
+
+
+def test_limit_boolean_raises_value_error():
+    """Behavior #15: limit=True/False rejects explicitly."""
+    with pytest.raises(ValueError):
+        query_stats(_ForbiddenConn(), limit=True)
+
+    with pytest.raises(ValueError):
+        query_stats(_ForbiddenConn(), limit=False)
+
+
+def test_limit_clamped_to_100_with_note(seeded_conn):
+    """Behavior #15: limit > 100 clamps to 100 with a note."""
+    conn, _ = seeded_conn
+    result = query_stats(conn, limit=99999, filters={"merchant": MERCHANT})
+
+    assert result["limit"] == 100
+    assert len(result["notes"]) > 0
+    # Note should mention the limit was capped
+    note_text = " ".join(result["notes"]).lower()
+    assert "limit" in note_text
+    assert "capped" in note_text or "cap" in note_text or "exceeded" in note_text
+
+
+def test_window_minutes_clamped_to_1440_with_note(seeded_conn):
+    """Behavior #11: window_minutes > 1440 clamps to 1440 with a note."""
+    conn, _ = seeded_conn
+    result = query_stats(conn, window_minutes=5000, filters={"merchant": MERCHANT})
+
+    assert result["window_minutes"] == 1440
+    assert len(result["notes"]) > 0
+    # Note should mention the window was capped
+    note_text = " ".join(result["notes"]).lower()
+    assert "window" in note_text
+    assert "capped" in note_text or "cap" in note_text or "exceeded" in note_text
+
+
+def test_window_minutes_boundary_1_is_valid(seeded_conn):
+    """Edge case: window_minutes=1 is the minimum and should pass without clamping."""
+    conn, _ = seeded_conn
+    result = query_stats(conn, window_minutes=1, filters={"merchant": MERCHANT})
+
+    assert result["window_minutes"] == 1
+    assert result["notes"] == []
+
+
+def test_window_minutes_boundary_1440_is_valid(seeded_conn):
+    """Edge case: window_minutes=1440 is the maximum and should pass without clamping."""
+    conn, _ = seeded_conn
+    result = query_stats(conn, window_minutes=1440, filters={"merchant": MERCHANT})
+
+    assert result["window_minutes"] == 1440
+    assert result["notes"] == []
+
+
+def test_limit_boundary_1_is_valid(seeded_conn):
+    """Edge case: limit=1 is the minimum and should pass without clamping."""
+    conn, _ = seeded_conn
+    result = query_stats(conn, limit=1, filters={"merchant": MERCHANT})
+
+    assert result["limit"] == 1
+    assert result["notes"] == []
+
+
+def test_limit_boundary_100_is_valid(seeded_conn):
+    """Edge case: limit=100 is the maximum and should pass without clamping."""
+    conn, _ = seeded_conn
+    result = query_stats(conn, limit=100, filters={"merchant": MERCHANT})
+
+    assert result["limit"] == 100
+    assert result["notes"] == []

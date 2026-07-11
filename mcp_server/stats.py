@@ -18,8 +18,11 @@ Injection safety rests on two rules:
 import psycopg
 from psycopg.rows import dict_row
 
-# Friendly name -> transactions column. The whitelist for both group_by and
-# filter keys; anything else is rejected before SQL is built.
+from mcp_server import validation
+
+# Friendly name -> transactions column. Keys are validated against
+# validation.ALLOWED_COLUMNS before being used to build SQL — only
+# whitelisted keys ever become identifiers here, caller values never do.
 _COLUMNS = {
     "method": "method",
     "status": "status",
@@ -27,7 +30,9 @@ _COLUMNS = {
     "merchant": "merchant",
 }
 
-_METRICS = {"count", "failure_rate"}
+_MAX_WINDOW_MINUTES = 1440  # 24h — aggregation can reasonably span up to a
+# day of retained data.
+_MAX_LIMIT = 100
 
 
 def query_stats(
@@ -46,22 +51,31 @@ def query_stats(
         or a single overall row when group_by is None. Every row has "count";
         "failure_rate" appears only when that metric is requested; "group"
         appears only when group_by is given.
+      - notes: human-readable notes about any clamping applied to
+        window_minutes/limit (empty list when nothing was clamped).
     """
     filters = dict(filters) if filters else {}
+    notes: list[str] = []
 
-    # Basic sanity checks only — exhaustive bounds/caps (max window, max
-    # limit, value length, etc.) arrive in Step 14.
-    if group_by is not None and group_by not in _COLUMNS:
-        raise ValueError(f"group_by must be one of {sorted(_COLUMNS)}, got {group_by!r}")
-    bad_keys = sorted(set(filters) - set(_COLUMNS))
-    if bad_keys:
-        raise ValueError(f"filter keys must be among {sorted(_COLUMNS)}, got {bad_keys}")
-    if metric not in _METRICS:
-        raise ValueError(f"metric must be one of {sorted(_METRICS)}, got {metric!r}")
-    if window_minutes <= 0:
-        raise ValueError(f"window_minutes must be > 0, got {window_minutes}")
-    if limit <= 0:
-        raise ValueError(f"limit must be > 0, got {limit}")
+    if group_by is not None:
+        validation.check_allowed_keys("group_by", [group_by], validation.ALLOWED_COLUMNS)
+    validation.check_allowed_keys("filter", filters.keys(), validation.ALLOWED_COLUMNS)
+    if "status" in filters:
+        validation.check_enum("status", filters["status"], validation.ALLOWED_STATUS)
+    if "method" in filters:
+        validation.check_enum("method", filters["method"], validation.ALLOWED_METHOD)
+    validation.check_enum("metric", metric, validation.ALLOWED_METRIC)
+
+    window_minutes, note = validation.clamp_positive_int(
+        "window_minutes", window_minutes, default=30, max_value=_MAX_WINDOW_MINUTES
+    )
+    if note:
+        notes.append(note)
+    limit, note = validation.clamp_positive_int(
+        "limit", limit, default=10, max_value=_MAX_LIMIT
+    )
+    if note:
+        notes.append(note)
 
     # WHERE clause shared by both queries. Column names come from _COLUMNS
     # (never caller input); values ride in params.
@@ -106,6 +120,8 @@ def query_stats(
         "metric": metric,
         "group_by": group_by,
         "filters": filters,
+        "limit": limit,
         "total_events": total_events,
         "rows": rows,
+        "notes": notes,
     }

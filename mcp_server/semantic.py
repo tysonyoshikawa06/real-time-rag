@@ -12,9 +12,11 @@ JSON-serializable dict (ISO 8601 timestamps, floats instead of Decimal).
 
 from consumer.embedder import Embedder
 from consumer.search import search
+from mcp_server import validation
 
 _MAX_WINDOW_MINUTES = 1440  # 24h cap
 _MAX_K = 50
+_MAX_QUERY_LEN = 2000
 
 
 def semantic_search(
@@ -33,21 +35,29 @@ def semantic_search(
     the last `window_minutes`, optionally narrowed to a single `gateway`.
     Returns a dict with the query header plus `matches`, each a plain dict
     with transaction_id, similarity, embedded_text, event_timestamp (ISO 8601
-    string), gateway, method, amount (float), and status.
+    string), gateway, method, amount (float), and status. Also carries
+    `notes`: human-readable notes about any clamping/truncation applied to
+    query/window_minutes/k (empty list when nothing was clamped).
 
     `exact_scan_threshold` is a test-only passthrough to search() so tests can
     force the "hnsw" path deterministically; when None it is not passed to
     search() at all, so search()'s own default applies.
     """
-    # Basic sanity checks only — comprehensive input validation is Step 14.
-    if not query or not query.strip():
-        raise ValueError("query must not be empty or whitespace-only")
-    if window_minutes <= 0 or window_minutes > _MAX_WINDOW_MINUTES:
-        raise ValueError(
-            f"window_minutes must be > 0 and <= {_MAX_WINDOW_MINUTES}, got {window_minutes}"
-        )
-    if k <= 0 or k > _MAX_K:
-        raise ValueError(f"k must be > 0 and <= {_MAX_K}, got {k}")
+    notes: list[str] = []
+
+    query, note = validation.check_query_text(query, _MAX_QUERY_LEN)
+    if note:
+        notes.append(note)
+
+    window_minutes, note = validation.clamp_positive_int(
+        "window_minutes", window_minutes, default=30, max_value=_MAX_WINDOW_MINUTES
+    )
+    if note:
+        notes.append(note)
+
+    k, note = validation.clamp_positive_int("k", k, default=10, max_value=_MAX_K)
+    if note:
+        notes.append(note)
 
     search_kwargs = dict(
         window=f"{window_minutes} minutes",
@@ -82,4 +92,5 @@ def semantic_search(
         "count": len(matches),
         "path": path,
         "matches": matches,
+        "notes": notes,
     }
