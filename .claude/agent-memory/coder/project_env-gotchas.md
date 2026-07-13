@@ -51,4 +51,21 @@ use `uv add`/`uv run` for all Python work here.
   mistake it for a bug in files you didn't touch. Separately, the project
   style calls for ASCII-only in new code, so avoid typing em-dashes in new
   files in the first place (use ` - ` instead) rather than relying on this
-  being harmless.
+  being harmless. Note this affects *model-generated* answer text too (e.g.
+  bullets/em-dashes in `agent/chat.py` answers) — that's the LLM's own output
+  encoding, not something to "fix" in our code.
+- `rich.console.Console.print(f"...")` runs the string through Rich's markup
+  parser by default. Any literal `[...]` in dynamic/interpolated content
+  (e.g. a `[ctx ~12k tokens]` counter string, or JSON/list reprs with `[`) can
+  be silently swallowed if it parses as an (unrecognized) style tag — no
+  error, the bracketed text just vanishes from output. Wrap any
+  interpolated/dynamic text with `rich.markup.escape(...)` before formatting
+  it into a `console.print(f"...")` call; verified this fixed a real bug in
+  `agent/chat.py`'s context-counter and tool-call display lines (Step 17).
+- Running a standalone verification script with `uv run python <script.py>`
+  from the repo root does NOT put the repo root on `sys.path`, so
+  `from agent.loop import ...`-style imports fail with `ModuleNotFoundError`
+  even though `uv run pytest`/`uv run python -m agent.x` both work fine (the
+  latter two get the cwd on sys.path via different mechanisms). Fix: prefix
+  with `PYTHONPATH="<repo-root>"` when running a loose script that imports
+  project packages.
