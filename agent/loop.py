@@ -2,12 +2,13 @@
 
 Sends a question to a Sonnet-class model, executes whatever tool_use blocks
 it returns via the MCP bridge, feeds the results back, and repeats until the
-model ends its turn or MAX_ITERATIONS is hit. No system prompt, no citation
-discipline, no framework - Step 16 adds the system prompt, this step is just
-the loop mechanics.
+model ends its turn or MAX_ITERATIONS is hit. Step 16 adds a system prompt
+(grounding/citation/routing discipline) carried via the API's `system`
+parameter; the loop mechanics themselves are unchanged from Step 15.
 """
 
 import os
+from pathlib import Path
 
 import anthropic
 from dotenv import dotenv_values
@@ -26,6 +27,10 @@ _RESULT_PREVIEW_CHARS = 300
 _client = anthropic.Anthropic(
     api_key=os.environ.get("ANTHROPIC_API_KEY", _env.get("ANTHROPIC_API_KEY"))
 )
+
+# Loaded once at import time and reused across every run_loop call, same
+# "load once" pattern as _client/_env above - never re-read per question.
+_SYSTEM_PROMPT = (Path(__file__).parent / "system_prompt.md").read_text(encoding="utf-8")
 
 
 def _extract_text(content: list) -> str:
@@ -78,6 +83,7 @@ def run_loop(question: str) -> str:
         response = _client.messages.create(
             model=MODEL,
             max_tokens=MAX_TOKENS,
+            system=_SYSTEM_PROMPT,
             tools=tools,
             messages=messages,
         )
