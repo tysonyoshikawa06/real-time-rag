@@ -30,3 +30,25 @@ use `uv add`/`uv run` for all Python work here.
   command while one is still in flight appears to kill the first one — don't
   re-issue the same pytest command to "check progress"; wait for the
   notification instead.
+- On this Windows machine, Docker Desktop is installed but not auto-started —
+  `docker ps` fails with a dockerDesktopLinuxEngine pipe error if it isn't
+  running, and `make up` / `docker compose` will not work until the daemon is
+  up. Fix: `powershell -Command "Start-Process 'C:\Program Files\Docker\Docker\Docker Desktop.exe'"`,
+  then poll `docker ps` (e.g. `until docker ps >/dev/null 2>&1; do sleep 5; done`)
+  until it succeeds (~1-2 min cold start) before running `make up`.
+- `fastmcp.Client.call_tool(name, args)` defaults to `raise_on_error=True`
+  (confirmed fastmcp 3.4.4) — it raises a client-side `ToolError` on a tool's
+  `ValueError`/exception rather than returning a `CallToolResult` with
+  `is_error=True`. Pass `raise_on_error=False` explicitly to get the
+  content-not-exception behavior (uniform `CallToolResult.content`/`.is_error`
+  for both success and tool-level failure) — needed anywhere the codebase
+  wants MCP tool errors to come back as text instead of a raised exception
+  (see `agent/mcp_bridge.py`).
+- Printing existing repo docstrings that contain em-dashes (e.g.
+  `mcp_server/server.py`) to this Windows console renders as `�` — that's a
+  cp1252 console *display* artifact only, not file corruption (verified via
+  raw byte read: the em-dash is valid UTF-8 `\xe2\x80\x94` on disk). Don't
+  mistake it for a bug in files you didn't touch. Separately, the project
+  style calls for ASCII-only in new code, so avoid typing em-dashes in new
+  files in the first place (use ` - ` instead) rather than relying on this
+  being harmless.
