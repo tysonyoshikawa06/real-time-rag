@@ -1,0 +1,195 @@
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+Loading weights:   0%|          | 0/103 [00:00<?, ?it/s]Loading weights: 100%|##########| 103/103 [00:00<00:00, 3914.23it/s]
+Injected: gateway_degradation targeting stripe-proxy for 180s (severity=0.7)
+All incidents cleared.
+Injected: fraud_burst BIN=411111 for 180s (intensity=0.25)
+All incidents cleared.
+Injected: novel_error_pattern targeting 24 Hour Fitness for 180s (intensity=0.35)
+=== Streaming RAG demo ===
+
+--- Preflight ---
+[preflight] containers already up: kafka, postgres, pgweb
+[preflight] all containers running and healthy.
+[preflight] checking whether data is flowing...
+[preflight] no recent events - launching producer and consumer in the background...
+[preflight] launched producer + consumer (logs under C:\Users\Tyson\Desktop\real-time-rag\demo\logs)
+[preflight] still waiting for events...
+[preflight] still waiting for events...
+[preflight] still waiting for events...
+[preflight] still waiting for events...
+[preflight] still waiting for events...
+[preflight] still waiting for events...
+[preflight] still waiting for events...
+[preflight] still waiting for events...
+[preflight] still waiting for events...
+[preflight] still waiting for events...
+[preflight] data flowing: Data is current as of ~15.6s (p50) over the last 1 minutes (665 events).
+
+Letting the stream run to establish a calm baseline (30s, fixed wait - there's no signal to poll for 'nothing wrong yet', only elapsed time gives confidence)...
+
+Question (baseline): What are the top payment methods and gateways in the last 5 minutes?
+  (asking the agent...)
+  [tool call] query_stats({'group_by': 'method', 'window_minutes': 5, 'metric': 'count'})
+  [tool result] {"window_minutes":5,"metric":"count","group_by":"method","filters":{},"limit":10,"total_events":1312,"rows":[{"group":"card","count":922},{"group":"ach","count":251},{"group":"wallet","count":139}],"notes":[]}
+  [tool call] query_stats({'group_by': 'gateway', 'window_minutes': 5, 'metric': 'count'})
+  [tool result] {"window_minutes":5,"metric":"count","group_by":"gateway","filters":{},"limit":10,"total_events":1312,"rows":[{"group":"checkout-io","count":335},{"group":"stripe-proxy","count":334},{"group":"adyen-gw","count":323},{"group":"braintree-edge","count":320}],"notes":[]}
+
+--- Answer (baseline) ---
+**Last 5 minutes — 1,312 total transactions**
+
+**By payment method:**
+1. Card — 922 (70%)
+2. ACH — 251 (19%)
+3. Wallet — 139 (11%)
+
+**By gateway:** (fairly evenly distributed)
+1. checkout-io — 335
+2. stripe-proxy — 334
+3. adyen-gw — 323
+4. braintree-edge — 320
+
+Card is the dominant payment method by a wide margin, while transaction volume is split almost evenly across all four gateways (each handling roughly 24-26% of traffic).
+
+
+Injecting gateway_degradation targeting 'stripe-proxy' for 3m at severity=0.7 (tests SQL aggregation + time awareness)...
+  waiting for stripe-proxy failure-rate spike to become visible...
+  stripe-proxy failure-rate spike is visible.
+
+Giving the now-visible spike 75s more to build up a clearer recent-minutes majority before asking...
+
+Question (gateway_degradation): Looking specifically at the last 2-3 minutes, does any one payment gateway have a meaningfully higher failure rate than the others right now? If so, name the gateway and quantify its failure rate versus the others.
+  (asking the agent...)
+  [tool call] query_stats({'filters': {}, 'group_by': 'gateway', 'metric': 'failure_rate', 'window_minutes': 3})
+  [tool result] {"window_minutes":3,"metric":"failure_rate","group_by":"gateway","filters":{},"limit":10,"total_events":3148,"rows":[{"group":"stripe-proxy","count":810,"failure_rate":0.4284},{"group":"braintree-edge","count":763,"failure_rate":0.0459},{"group":"checkout-io","count":791,"failure_rate":0.0354},{"gro...
+  [tool call] query_stats({'filters': {}, 'group_by': 'gateway', 'metric': 'count', 'window_minutes': 3})
+  [tool result] {"window_minutes":3,"metric":"count","group_by":"gateway","filters":{},"limit":10,"total_events":3148,"rows":[{"group":"stripe-proxy","count":810},{"group":"checkout-io","count":791},{"group":"adyen-gw","count":784},{"group":"braintree-edge","count":763}],"notes":[]}
+  [tool call] semantic_search({'query': 'payment failure error', 'gateway': 'stripe-proxy', 'window_minutes': 3, 'k': 5})
+  [tool result] {"query":"payment failure error","window_minutes":3,"gateway":"stripe-proxy","k":5,"count":5,"path":"exact","matches":[{"transaction_id":"ebf1112d-2b8a-4e46-9e8d-b5e42377c71f","similarity":0.5329,"embedded_text":"card payment via stripe-proxy failed: 51: INSUFFICIENT FUNDS","event_timestamp":"2026-0...
+  [tool call] query_stats({'filters': {'gateway': 'stripe-proxy'}, 'metric': 'failure_rate', 'window_minutes': 60})
+  [tool result] {"window_minutes":60,"metric":"failure_rate","group_by":null,"filters":{"gateway":"stripe-proxy"},"limit":10,"total_events":837,"rows":[{"count":837,"failure_rate":0.4385}],"notes":[]}
+
+--- Answer (gateway_degradation) ---
+## Finding: stripe-proxy is failing at ~10-16x the rate of every other gateway right now
+
+Looking at the last 3 minutes (3,148 total transactions across 4 gateways):
+
+| Gateway | Failure rate | Volume |
+|---|---|---|
+| **stripe-proxy** | **42.8%** | 810 txns |
+| braintree-edge | 4.6% | 763 txns |
+| checkout-io | 3.5% | 791 txns |
+| adyen-gw | 2.7% | 784 txns |
+
+Stripe-proxy's failure rate (0.4284) is roughly 9x braintree-edge, 12x checkout-io, and 16x adyen-gw — well outside normal variance given the other three cluster tightly between 2.7-4.6%.
+
+This is not a fresh spike — checking the last 60 minutes for stripe-proxy alone shows a nearly identical 43.85% failure rate (837 total events), so this has been sustained, not a sudden blip in the last 3 minutes.
+
+**What's failing:** A semantic search of stripe-proxy failures in this window shows a mix of standard card decline reasons rather than one single error signature — e.g. transaction `ebf1112d-2b8a-4e46-9e8d-b5e42377c71f` ("51: INSUFFICIENT FUNDS"), `f5f44bc5-500b-4944-9ea2-eca19b8bbc5c` and `1bf18471-a8bd-4420-a387-ce3c1dfb56fd` ("Declined - insufficient funds available"), `7bb1d6fe-aa2a-4570-8199-b735abc809c2` ("ERR_82 invalid CVC"), and `6e03ef96-6550-470d-ad3e-c5a5caa985c3` ("Declined - do not honor"). The variety of decline reasons suggests this isn't a single upstream outage signature but an elevated overall decline rate specific to this gateway — worth checking against stripe-proxy's own upstream/processor status.
+
+Data currency: I did not check freshness on this specific query — if timing precision matters, I can run `system_freshness` to confirm ingest lag.
+
+
+Injecting fraud_burst on card_bin='411111' for 3m (tests structured pattern detection - shared BIN, tiny amounts)...
+  waiting for fraud burst on BIN 411111 to become visible...
+  fraud burst on BIN 411111 is visible.
+
+Question (fraud_burst): Look at the 12 most recent successful card transactions. Do several of them share the same card BIN and have small amounts (under $5)? If so, name the BIN and cite the matching transaction IDs, briefly.
+  (asking the agent...)
+  [tool call] get_transactions({'status': 'success', 'method': 'card', 'limit': 12})
+  [tool result] {"mode":"filter","transaction_ids":null,"window_minutes":30,"status":"success","gateway":null,"method":"card","limit":12,"count":12,"rows":[{"transaction_id":"d3ed2082-8021-48d6-afa7-8ddb103bc245","event_timestamp":"2026-07-14T23:05:00.495606+00:00","merchant":"LinkedIn Premium","method":"card","amo...
+
+--- Answer (fraud_burst) ---
+Yes. Among the 12 most recent successful card transactions, BIN **411111** appears repeatedly with sub-$5 amounts:
+
+- **d3ed2082-8021-48d6-afa7-8ddb103bc245** — $4.10 (LinkedIn Premium)
+- **4d5a00b7-7aec-44db-94f2-f72baeae3189** — $2.64 (Anthropic)
+- **e5955a18-96ac-4cf9-be67-57825a9f1e70** — $1.21 (LinkedIn Premium)
+- **b5404db9-0aca-4074-8ea6-4eb535e13ad4** — $4.95 (7-Eleven)
+
+BIN 411111 also shows up twice more in this set of 12 but at larger amounts (0f7a377f, $462.01; 5a677264, $169.24), so it's the dominant BIN overall, not just for the small-amount cluster.
+
+No other BIN in this batch has more than one sub-$5 transaction.
+
+
+Injecting novel_error_pattern targeting '24 Hour Fitness' for 3m at intensity=0.35 (tests semantic search - SQL can't find this one)...
+  waiting for novel error signature to become visible...
+  novel error signature is visible.
+
+Giving the now-visible novel error 75s more to accumulate more matching rows before asking...
+
+Question (novel_error_pattern): Check at most the 15 most recent failures (via get_transactions and/or semantic_search) from the last 2-3 minutes. Is there an error message among them that's different in kind from the usual decline/timeout/fraud reasons in this stream, and occurring often enough to stand out (not just an isolated one-off)? If so, describe the pattern briefly and cite up to 3 matching transaction IDs.All incidents cleared.
+[07/14/26 13:06:50] Error calling tool 'query_stats'                           
+                    +----------- Traceback (most recent call last) -----------+
+                    | C:\Users\Tyson\desktop\real-time-rag\.venv\Lib\site-pac |
+                    | kages\fastmcp\server\server.py:1312 in call_tool        |
+                    |                                                         |
+                    | C:\Users\Tyson\desktop\real-time-rag\.venv\Lib\site-pac |
+                    | kages\fastmcp\tools\base.py:421 in _run                 |
+                    |                                                         |
+                    |                 ... 9 frames hidden ...                 |
+                    |                                                         |
+                    | C:\Users\Tyson\desktop\real-time-rag\mcp_server\stats.p |
+                    | y:66 in query_stats                                     |
+                    |                                                         |
+                    |    63     if "status" in filters:                       |
+                    |    64         validation.check_enum("status", filters[" |
+                    |    65     if "method" in filters:                       |
+                    | >  66         validation.check_enum("method", filters[" |
+                    |    67     validation.check_enum("metric", metric, valid |
+                    |    68                                                   |
+                    |    69     window_minutes, note = validation.clamp_posit |
+                    |                                                         |
+                    | C:\Users\Tyson\desktop\real-time-rag\mcp_server\validat |
+                    | ion.py:75 in check_enum                                 |
+                    |                                                         |
+                    |    72     valid options, so a retrying caller knows exa |
+                    |    73     """                                           |
+                    |    74     if value not in allowed:                      |
+                    | >  75         raise ValueError(f"{name} must be one of  |
+                    |    76                                                   |
+                    |    77                                                   |
+                    |    78 def check_allowed_keys(kind: str, keys: Iterable[ |
+                    +---------------------------------------------------------+
+                    ValueError: method must be one of ['ach', 'card',          
+                    'wallet'], got 'crypto'                                    
+
+  (asking the agent...)
+  [tool call] get_transactions({'status': 'failure', 'window_minutes': 3, 'limit': 15})
+  [tool result] {"mode":"filter","transaction_ids":null,"window_minutes":3,"status":"failure","gateway":null,"method":null,"limit":15,"count":15,"rows":[{"transaction_id":"2d993c32-81a2-4adc-9256-718be84f44a7","event_timestamp":"2026-07-14T23:06:30.395258+00:00","merchant":"24 Hour Fitness","method":"ach","amount":...
+
+--- Answer (novel_error_pattern) ---
+I found a distinct, recurring pattern in the last 3 minutes of failures.
+
+**Pattern:** `FATAL: currency_mismatch expected=USD got=JPY merchant_cfg_v2 locale_override=true fallback_denied` — this is a configuration/currency-mismatch error, categorically different from the usual card declines (insufficient funds, expired card, bad CVC), gateway timeouts, or fraud-type reasons seen elsewhere in the sample. It appears **3 times** out of the 15 most recent failures (20%), all tied to the same merchant ("24 Hour Fitness") but across two different gateways (checkout-io, braintree-edge), suggesting a merchant-side currency/locale configuration issue rather than an isolated glitch.
+
+Matching transaction IDs:
+- `2d993c32-81a2-4adc-9256-718be84f44a7` (checkout-io, ACH, 24 Hour Fitness)
+- `4aab67d6-7b45-42ed-8fcb-cec5aa819af5` (braintree-edge, card, 24 Hour Fitness)
+- `e6bd9301-f659-4670-bff6-e96512ec060e` (braintree-edge, card, 24 Hour Fitness)
+
+Everything else in the sample (NSF, card expired, invalid CVC, insufficient funds, gateway timeouts, network unreachable, "do not honor") matches the normal decline/timeout/fraud vocabulary for this stream. This currency_mismatch error stands out as a new, recurring failure mode worth flagging to the merchant/config team, likely a locale/currency misconfiguration specific to "24 Hour Fitness" rather than a stream-wide gateway issue.
+
+
+--- Wrap-up ---
+
+Question (freshness): How current is this data right now?
+  (asking the agent...)
+  [tool call] system_freshness({'window_minutes': 5})
+  [tool result] {"window_minutes":5,"event_count":5654,"p50_seconds":0.7,"p95_seconds":18.1,"p99_seconds":28.7,"max_seconds":"31.9","human_readable":"Data is current as of ~0.7s (p50) over the last 5 minutes (5,654 events).","notes":[]}
+
+--- Answer (freshness) ---
+Data is current. Based on ingest-lag stats over the last 5 minutes (5,654 events): median lag is 0.7s, p95 is 18.1s, p99 is 28.7s, and max is 31.9s. So the typical event is queryable almost immediately, with the slowest ~1% of events lagging up to ~30s behind real time — this is a live, near-real-time stream, not stale data.
+
+
+Question (hallucination-control): How many crypto payments failed today?
+  (asking the agent...)
+  [tool call] query_stats({'filters': {'method': 'crypto', 'status': 'failure'}, 'window_minutes': 1440, 'metric': 'count'})
+  [tool result] Error calling tool 'query_stats': method must be one of ['ach', 'card', 'wallet'], got 'crypto'
+
+--- Answer (hallucination-control) ---
+Our stream only tracks three payment methods: **ach**, **card**, and **wallet** — there is no "crypto" method in this system. So the data shows 0 crypto payments failed today, because crypto isn't a tracked payment method at all here.
+
+If you meant one of the tracked methods (ach/card/wallet), let me know and I can pull failure counts for it. Note also that "today" isn't a native window in these tools — they operate on rolling minute windows, so I used a 1440-minute (24h) window as the closest proxy for "today."
+
+
+=== Demo complete ===

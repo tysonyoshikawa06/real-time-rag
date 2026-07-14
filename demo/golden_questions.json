@@ -1,0 +1,86 @@
+[
+  {
+    "id": "aggregation",
+    "category": "Pure aggregation",
+    "question": "What are the top payment methods and gateways in the last 5 minutes?",
+    "incident_context": null,
+    "tools_expected": ["query_stats"],
+    "assertions": [
+      "states the time window examined (last 5 minutes)",
+      "names concrete payment methods and gateways rather than vague generalities",
+      "reports counts or proportions for methods and gateways, not just names"
+    ]
+  },
+  {
+    "id": "gateway_rate",
+    "category": "Rate comparison",
+    "question": "Looking specifically at the last 2-3 minutes, does any one payment gateway have a meaningfully higher failure rate than the others right now? If so, name the gateway and quantify its failure rate versus the others.",
+    "incident_context": {
+      "type": "gateway_degradation",
+      "gateway": "stripe-proxy",
+      "duration": "3m",
+      "severity": "0.7"
+    },
+    "tools_expected": ["query_stats"],
+    "assertions": [
+      "names the gateway stripe-proxy as the outlier",
+      "quantifies stripe-proxy's failure rate as a percentage or ratio",
+      "compares stripe-proxy's rate against the other gateways, not just its own history"
+    ]
+  },
+  {
+    "id": "fraud_pattern",
+    "category": "Structured pattern",
+    "question": "Look at the 12 most recent successful card transactions. Do several of them share the same card BIN and have small amounts (under $5)? If so, name the BIN and cite the matching transaction IDs, briefly.",
+    "incident_context": {
+      "type": "fraud_burst",
+      "card_bin": "411111",
+      "duration": "3m"
+    },
+    "tools_expected": ["get_transactions"],
+    "assertions": [
+      "names the card BIN 411111 as the shared pattern",
+      "states that the matching transactions are all under $5",
+      "cites at least one real transaction_id from the matching rows"
+    ]
+  },
+  {
+    "id": "novel_error",
+    "category": "Semantic novelty",
+    "question": "Check at most the 15 most recent failures (via get_transactions and/or semantic_search) from the last 2-3 minutes. Is there an error message among them that's different in kind from the usual decline/timeout/fraud reasons in this stream, and occurring often enough to stand out (not just an isolated one-off)? If so, describe the pattern briefly and cite up to 3 matching transaction IDs.",
+    "incident_context": {
+      "type": "novel_error_pattern",
+      "merchant": "24 Hour Fitness",
+      "duration": "3m",
+      "intensity": "0.35"
+    },
+    "tools_expected": ["semantic_search", "get_transactions"],
+    "assertions": [
+      "describes an error pattern distinct in kind from ordinary decline/timeout/fraud reasons",
+      "states that the pattern recurs rather than being a single isolated failure",
+      "cites at least one real transaction_id matching the novel error"
+    ]
+  },
+  {
+    "id": "freshness",
+    "category": "Freshness",
+    "question": "How current is this data right now?",
+    "incident_context": null,
+    "tools_expected": ["system_freshness"],
+    "assertions": [
+      "states a concrete recency figure (e.g. seconds/minutes since last event) rather than a vague claim",
+      "reflects data that is actually recent (not stale or missing)"
+    ]
+  },
+  {
+    "id": "hallucination_control",
+    "category": "Negative control",
+    "question": "How many crypto payments failed today?",
+    "incident_context": null,
+    "tools_expected": ["query_stats"],
+    "assertions": [
+      "reports no matching data rather than inventing a number",
+      "explains that crypto is not a valid payment method in this stream"
+    ]
+  }
+]
