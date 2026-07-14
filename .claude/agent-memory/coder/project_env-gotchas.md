@@ -69,3 +69,38 @@ use `uv add`/`uv run` for all Python work here.
   latter two get the cwd on sys.path via different mechanisms). Fix: prefix
   with `PYTHONPATH="<repo-root>"` when running a loose script that imports
   project packages.
+- `agent/loop.py`'s `run_turn` uses `MAX_TOKENS = 1024` for the whole response
+  (thinking + visible text combined) and this model ("claude-sonnet-5") uses
+  extended thinking by default. Verified live (Step 18A demo build): asking a
+  question that leads the model to pull a sizeable raw tool payload (e.g.
+  `get_transactions(..., limit=30)` or `limit=100`) can make a later turn spend
+  ~900+ of the 1024 tokens on the hidden `thinking` block, leaving too few (or
+  zero) tokens for the visible answer — `stop_reason` comes back `"max_tokens"`
+  (not `"tool_use"`), `run_turn` treats that as "done", and `_extract_text`
+  returns whatever text happened to be emitted before the cutoff (sometimes
+  empty, sometimes a sentence cut off mid-word). This isn't a crash and prints
+  no error — it just silently produces a truncated/empty final answer, so it's
+  easy to miss. Confirmed via a debug harness that called
+  `L._client.messages.create(...)` directly and inspected
+  `response.usage.output_tokens_details.thinking_tokens`. Since `agent/loop.py`
+  is off-limits to edit in most feature work, the fix lives on the *caller*
+  side: word prompts/golden questions that go through `run_loop`/`run_turn` to
+  bias the model toward a small, bounded tool call (e.g. "look at the 10-15
+  most recent X" rather than an open-ended "check recent X") rather than a
+  large `limit=100` dump it has to reason over in one turn. Verified fix: the
+  same investigation with `limit=10-15` reliably finished with `stop_reason
+  == "end_turn"` and a complete, correctly cited answer.
+- This environment can accumulate a large stale Kafka consumer-group backlog
+  (observed ~580k messages/partition-lag) if a producer was ever left running
+  without a matching consumer for a while. Symptom: a freshly started consumer
+  logs continuous `[batch] wrote N events, total=...` (looks healthy) but
+  `system_freshness`/`query_freshness` reports `event_count: 0` for a while,
+  because the events it's furiously writing all have old `event_timestamp`s
+  from the backlog and fall outside any recent window — freshness is windowed
+  on event time, not ingest time. Diagnose with `MSYS_NO_PATHCONV=1 docker exec
+  kafka /opt/kafka/bin/kafka-consumer-groups.sh --bootstrap-server
+  localhost:9092 --describe --group rag-consumer` and check the `LAG` column;
+  if it's large, just wait for it to drain (it catches up fast once started,
+  but "fast" can still be a few minutes for a very large backlog) rather than
+  assuming something is broken. (The `MSYS_NO_PATHCONV=1` prefix is needed in
+  Git Bash so it doesn't mangle the in-container `/opt/kafka/...` path.)
