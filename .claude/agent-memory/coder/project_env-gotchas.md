@@ -90,6 +90,31 @@ use `uv add`/`uv run` for all Python work here.
   large `limit=100` dump it has to reason over in one turn. Verified fix: the
   same investigation with `limit=10-15` reliably finished with `stop_reason
   == "end_turn"` and a complete, correctly cited answer.
+- `consumer/freshness.py::query_freshness()`'s returned dict has an
+  inconsistent type for its `"max"` key vs. `"p50"/"p95"/"p99"`: the
+  percentiles come back as plain Python `float` (from `percentile_cont`),
+  but `"max"` (from a plain `MAX(lag_sec)` aggregate over the same
+  `extract(epoch FROM ...)` expression) comes back as a psycopg `Decimal` —
+  verified live (Step 19A). This is invisible when the result only ever
+  flows through `mcp_server/freshness.py`'s `system_freshness` tool, because
+  FastMCP's own result serializer stringifies `Decimal` silently (shows up
+  as `"max_seconds":"1.2"`, a JSON string, not a number) — so it never raised
+  there. It becomes a real bug the moment any *other* caller re-serializes
+  `query_freshness()`'s raw dict with plain `json.dumps` (e.g. writing an
+  eval/report file) — `TypeError: Object of type Decimal is not JSON
+  serializable`. Fix at the call site: explicitly `float()` every numeric
+  field pulled from `query_freshness()` before dumping it, don't assume
+  "looks numeric" implies "is a JSON-safe float" for this function's output.
+- Ruff (this repo's `target-version = "py311"`) flags `UP017`
+  (`datetime.now(timezone.utc)` → prefer the `datetime.UTC` alias) on **any
+  new code**, even though this exact `from datetime import datetime, timezone`
+  + `datetime.now(timezone.utc)` pattern is already used unfixed elsewhere in
+  the codebase (`consumer/db.py`, `producer/scenarios.py` — pre-existing lint
+  debt, not enforced retroactively). Don't copy that older pattern into new
+  files just because it's precedent — `uv run ruff check --fix <file>` cleanly
+  converts to `from datetime import UTC, datetime` / `datetime.now(UTC)` in
+  new code and that's what a clean `ruff check` on the file you're asked to
+  lint will require (Step 19A: `eval/run_eval.py`).
 - This environment can accumulate a large stale Kafka consumer-group backlog
   (observed ~580k messages/partition-lag) if a producer was ever left running
   without a matching consumer for a while. Symptom: a freshly started consumer

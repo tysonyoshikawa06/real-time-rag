@@ -16,7 +16,8 @@ Two different kinds of "wait" appear below, and they are NOT the same thing:
     anomaly isn't something you can detect early, only something you can
     wait long enough to be reasonably confident of. So this one just counts
     seconds.
-  - Every incident-visibility wait below (_poll_until) is signal-gated: it
+  - Every incident-visibility wait below (poll_until, from demo.incident_control)
+    is signal-gated: it
     polls a real MCP tool and only proceeds once the incident's actual
     signature shows up in the data (or a bounded max wait is exceeded, in
     which case it warns and proceeds anyway rather than hanging forever).
@@ -30,13 +31,23 @@ Run with: `python -m demo.run_demo [--pause]` or `make demo`.
 """
 
 import argparse
-import json
 import subprocess
 import time
 from pathlib import Path
 
 from agent.loop import run_loop
 from agent.mcp_bridge import MCPBridge
+from demo.incident_control import (
+    POST_CLEAR_PAUSE_SECONDS,
+    POST_GATE_BUFFER_SECONDS,
+    clear_incident,
+    fraud_pattern_visible,
+    gateway_failure_rate_elevated,
+    inject,
+    novel_error_visible,
+    parse_tool_json,
+    poll_until,
+)
 from producer.config import CARD_BINS, MERCHANTS
 from producer.scenarios import NOVEL_ERROR_SIGNATURE
 
@@ -62,9 +73,8 @@ BASELINE_WAIT_SECONDS = 30
 # Generous fixed duration so an incident can't expire mid-demo before it is
 # explicitly cleared in step (e) of the incident loop.
 INCIDENT_DURATION = "3m"
-GATE_POLL_INTERVAL_SECONDS = 5
-GATE_MAX_WAIT_SECONDS = 90
-POST_CLEAR_PAUSE_SECONDS = 2
+# GATE_POLL_INTERVAL_SECONDS/GATE_MAX_WAIT_SECONDS/POST_CLEAR_PAUSE_SECONDS
+# moved to demo/incident_control.py (Step 19A) - imported above.
 
 # gateway_degradation and novel_error_pattern each use a stronger-than-CLI-default
 # severity/intensity so the injected signal dominates a couple minutes of
@@ -107,7 +117,8 @@ NOVEL_ERROR_INTENSITY = "0.35"
 # the demo's own 0.12 gate threshold, rather than the ~12%-vs-12% coin flip
 # measured with the old 15s buffer. 75s buffer + the few seconds the gate
 # itself typically takes to pass gets us to roughly that T.
-POST_GATE_BUFFER_SECONDS = 75
+# (POST_GATE_BUFFER_SECONDS itself now lives in demo/incident_control.py,
+# imported above, since eval/run_eval.py (Step 19A) reuses the same value.)
 
 # Fixed, deterministic incident targets (never random) so the demo is
 # repeatable run to run.
@@ -252,22 +263,9 @@ def _ensure_containers_up() -> None:
         time.sleep(DOCKER_POLL_INTERVAL_SECONDS)
 
 
-def _parse_tool_json(text: str) -> dict:
-    """Best-effort parse of an MCP tool's text result back into the dict it wraps.
-
-    call_tool() never raises, so a genuine connection failure or a validation
-    error comes back as plain (non-JSON) text here - treated as "no data yet"
-    by callers rather than crashing the demo.
-    """
-    try:
-        return json.loads(text)
-    except json.JSONDecodeError:
-        return {}
-
-
 def _check_freshness(bridge: MCPBridge, window_minutes: int = 1) -> dict:
     text = bridge.call_tool("system_freshness", {"window_minutes": window_minutes})
-    return _parse_tool_json(text)
+    return parse_tool_json(text)
 
 
 def _ensure_data_flowing(bridge: MCPBridge) -> None:
@@ -319,78 +317,6 @@ def _ensure_data_flowing(bridge: MCPBridge) -> None:
         print("[preflight] still waiting for events...")
 
 
-def _inject(*args: str) -> None:
-    """Invoke producer.inject's real CLI (control-file writing lives there, not here)."""
-    cmd = ["uv", "run", "python", "-m", "producer.inject", *args]
-    subprocess.run(cmd, cwd=REPO_ROOT, check=True)
-
-
-def _clear_incident() -> None:
-    _inject("clear")
-
-
-def _poll_until(check_fn, label: str) -> bool:
-    """Poll check_fn every GATE_POLL_INTERVAL_SECONDS until it returns True or the
-    bounded max wait is exceeded. Never hangs forever - a late/missing signal
-    is reported as a warning and the demo proceeds anyway."""
-    print(f"  waiting for {label} to become visible...")
-    deadline = time.monotonic() + GATE_MAX_WAIT_SECONDS
-    while True:
-        if check_fn():
-            print(f"  {label} is visible.")
-            return True
-        if time.monotonic() >= deadline:
-            print(
-                f"  WARNING: {label} did not become visible within "
-                f"{GATE_MAX_WAIT_SECONDS}s - proceeding anyway."
-            )
-            return False
-        time.sleep(GATE_POLL_INTERVAL_SECONDS)
-
-
-def _gateway_degraded(bridge: MCPBridge) -> bool:
-    """query_stats can group by gateway directly - this is the one incident an
-    aggregate tool can see on its own."""
-    text = bridge.call_tool(
-        "query_stats",
-        {"metric": "failure_rate", "group_by": "gateway", "window_minutes": 2},
-    )
-    data = _parse_tool_json(text)
-    for row in data.get("rows", []):
-        if row.get("group") == TARGET_GATEWAY:
-            return (row.get("failure_rate") or 0) >= GATEWAY_FAILURE_RATE_THRESHOLD
-    return False
-
-
-def _fraud_visible(bridge: MCPBridge) -> bool:
-    """query_stats has no card_bin dimension, so the fraud burst has to be found
-    by inspecting get_transactions rows client-side, exactly like the agent
-    itself must do when asked the fraud question."""
-    text = bridge.call_tool(
-        "get_transactions", {"method": "card", "window_minutes": 2, "limit": 100}
-    )
-    data = _parse_tool_json(text)
-    matches = [
-        row
-        for row in data.get("rows", [])
-        if row.get("card_bin") == TARGET_CARD_BIN and (row.get("amount") or 0) < FRAUD_MAX_AMOUNT
-    ]
-    return len(matches) >= FRAUD_MIN_MATCHING_ROWS
-
-
-def _novel_error_visible(bridge: MCPBridge) -> bool:
-    """Client-side string containment on error_text - internal plumbing only.
-    The agent itself is never told this signature; it must find it via
-    semantic_search's meaning-based match."""
-    text = bridge.call_tool(
-        "get_transactions", {"status": "failure", "window_minutes": 2, "limit": 100}
-    )
-    data = _parse_tool_json(text)
-    return any(
-        NOVEL_ERROR_SIGNATURE in (row.get("error_text") or "") for row in data.get("rows", [])
-    )
-
-
 def _ask(pause: bool, label: str, question: str) -> str:
     _beat(pause, f"Question ({label}): {question}")
     print("  (asking the agent...)")
@@ -432,13 +358,18 @@ def main() -> None:
         f"{INCIDENT_DURATION} at severity={GATEWAY_DEGRADATION_SEVERITY} (tests SQL "
         "aggregation + time awareness)...",
     )
-    _inject(
+    inject(
         "gateway_degradation",
         "--gateway", TARGET_GATEWAY,
         "--duration", INCIDENT_DURATION,
         "--severity", GATEWAY_DEGRADATION_SEVERITY,
     )
-    _poll_until(lambda: _gateway_degraded(bridge), f"{TARGET_GATEWAY} failure-rate spike")
+    poll_until(
+        lambda: gateway_failure_rate_elevated(
+            bridge, TARGET_GATEWAY, threshold=GATEWAY_FAILURE_RATE_THRESHOLD
+        ),
+        f"{TARGET_GATEWAY} failure-rate spike",
+    )
     _beat(
         pause,
         f"Giving the now-visible spike {POST_GATE_BUFFER_SECONDS}s more to build up a "
@@ -446,7 +377,7 @@ def main() -> None:
     )
     time.sleep(POST_GATE_BUFFER_SECONDS)
     _ask(pause, "gateway_degradation", GATEWAY_QUESTION)
-    _clear_incident()
+    clear_incident()
     time.sleep(POST_CLEAR_PAUSE_SECONDS)
 
     # --- Incident 2: fraud burst ---
@@ -455,10 +386,18 @@ def main() -> None:
         f"Injecting fraud_burst on card_bin={TARGET_CARD_BIN!r} for {INCIDENT_DURATION} "
         "(tests structured pattern detection - shared BIN, tiny amounts)...",
     )
-    _inject("fraud_burst", "--card-bin", TARGET_CARD_BIN, "--duration", INCIDENT_DURATION)
-    _poll_until(lambda: _fraud_visible(bridge), f"fraud burst on BIN {TARGET_CARD_BIN}")
+    inject("fraud_burst", "--card-bin", TARGET_CARD_BIN, "--duration", INCIDENT_DURATION)
+    poll_until(
+        lambda: fraud_pattern_visible(
+            bridge,
+            TARGET_CARD_BIN,
+            min_rows=FRAUD_MIN_MATCHING_ROWS,
+            max_amount=FRAUD_MAX_AMOUNT,
+        ),
+        f"fraud burst on BIN {TARGET_CARD_BIN}",
+    )
     _ask(pause, "fraud_burst", FRAUD_QUESTION)
-    _clear_incident()
+    clear_incident()
     time.sleep(POST_CLEAR_PAUSE_SECONDS)
 
     # --- Incident 3: novel error pattern ---
@@ -468,13 +407,15 @@ def main() -> None:
         f"{INCIDENT_DURATION} at intensity={NOVEL_ERROR_INTENSITY} (tests semantic "
         "search - SQL can't find this one)...",
     )
-    _inject(
+    inject(
         "novel_error_pattern",
         "--merchant", TARGET_MERCHANT,
         "--duration", INCIDENT_DURATION,
         "--intensity", NOVEL_ERROR_INTENSITY,
     )
-    _poll_until(lambda: _novel_error_visible(bridge), "novel error signature")
+    poll_until(
+        lambda: novel_error_visible(bridge, NOVEL_ERROR_SIGNATURE), "novel error signature"
+    )
     _beat(
         pause,
         f"Giving the now-visible novel error {POST_GATE_BUFFER_SECONDS}s more to "
@@ -482,7 +423,7 @@ def main() -> None:
     )
     time.sleep(POST_GATE_BUFFER_SECONDS)
     _ask(pause, "novel_error_pattern", NOVEL_QUESTION)
-    _clear_incident()
+    clear_incident()
     time.sleep(POST_CLEAR_PAUSE_SECONDS)
 
     print("\n--- Wrap-up ---")
