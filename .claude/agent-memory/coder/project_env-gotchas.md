@@ -129,3 +129,33 @@ use `uv add`/`uv run` for all Python work here.
   but "fast" can still be a few minutes for a very large backlog) rather than
   assuming something is broken. (The `MSYS_NO_PATHCONV=1` prefix is needed in
   Git Bash so it doesn't mangle the in-container `/opt/kafka/...` path.)
+- **Eval grading (Step 19B, `eval/grade.py`) on real captures will show
+  "failures" that are genuine timing drift, not code/agent bugs**: the stream
+  moves at ~10-100 events/sec, and `eval/run_eval.py`'s ground-truth SQL
+  (`eval/ground_truth_queries.py`) is captured a few seconds *after* the
+  agent's own tool call, on a fresh connection/query — for recency-based
+  ground truth ("12 most recent successful card transactions", "15 most
+  recent failures", a live failure-rate window), those few seconds are enough
+  for the row set or rate to have genuinely moved on. Observed live: a
+  `fraud_pattern` run's cited transaction_ids and the ground truth's
+  "matching_transaction_ids" had **zero overlap** (two different 12-row
+  snapshots of a moving window, not a hallucination), and a `gateway_rate`
+  run's extracted 37.9% vs. ground truth's 44.3% failure rate exceeded the 2pp
+  tolerance (the incident was still ramping between the two snapshots). Don't
+  read either as "the grader is broken" or "the agent hallucinated" without
+  checking whether the two snapshots' timestamps could plausibly have
+  diverged — report it as a real, explainable finding instead.
+- **A literal, spec-specified naive regex can produce a false extraction when
+  a "window" phrase appears before the real target phrase in the same answer
+  text.** `freshness`'s assertion-1 checker (spec: "regex for a number
+  followed by `s|sec|second|ms|minute`") matched "**5** minutes" from "...over
+  the last 5 minutes..." (the stated window) before it ever reached the real
+  "0.6s" recency figure later in the same sentence — converted to 300s, which
+  then exactly tripped the 300s staleness threshold in assertion-2 (which
+  reuses assertion-1's extraction, per spec). This is not a coding bug; it's
+  an inherent property of the spec's own regex applied literally to an answer
+  that happens to mention the window before the metric. Per this project's
+  standing rule (don't invent smarter alternative check logic than what the
+  spec specifies), implement the regex exactly as written and report the
+  resulting false failure transparently rather than "fixing" it by adding
+  unspecified disambiguation logic.
