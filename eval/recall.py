@@ -183,16 +183,32 @@ def _topk(
     `consumer/search.py::search()`'s exact path) so Postgres has no choice
     but a full sequential scan - the only valid ground truth for recall.
     `mode="hnsw"` disables sequential scan so the planner is forced onto the
-    HNSW index, at the given `ef_search`. `SET LOCAL` scopes both to this
-    transaction only; the index stays available for every other query on
-    this connection.
+    HNSW index, at the given `ef_search`.
+
+    Every relevant GUC is set explicitly on every call - both the one(s) a
+    mode needs off *and* the one(s) it needs back on - rather than relying on
+    `SET LOCAL` to revert automatically between calls (20C-3 fix). It
+    doesn't: this function runs many times per query (once "exact", once per
+    `ef_search`) inside one long-lived outer transaction, so after the very
+    first call, every later `with conn.transaction():` here opens a
+    SAVEPOINT, not a fresh top-level transaction - and Postgres restores
+    `SET LOCAL` values on ROLLBACK TO SAVEPOINT but *not* on a normal
+    RELEASE SAVEPOINT (verified directly against this database). Left
+    unhandled, one "hnsw" call's `enable_seqscan = off` silently leaked into
+    every subsequent "exact" call in the same run, quietly turning "ground
+    truth" into something other than a true sequential scan for the rest of
+    the run - see the Methodology note in `generate_recall_report` for what
+    this changed about the reported numbers.
     """
     cur = conn.cursor()
     with conn.transaction():
         if mode == "exact":
+            cur.execute("SET LOCAL enable_seqscan = on")
             cur.execute("SET LOCAL enable_indexscan = off")
             cur.execute("SET LOCAL enable_bitmapscan = off")
         elif mode == "hnsw":
+            cur.execute("SET LOCAL enable_indexscan = on")
+            cur.execute("SET LOCAL enable_bitmapscan = on")
             cur.execute("SET LOCAL enable_seqscan = off")
             cur.execute(f"SET LOCAL hnsw.ef_search = {int(ef_search)}")
         else:
@@ -617,6 +633,31 @@ def generate_recall_report(results: dict, output_path=None) -> Path:
             "- the diagnostic for why `id_recall` and `distance_recall` might disagree on a "
             "given query."
         ),
+        (
+            "- **Correctness fix (20C-3), verified directly against this database:** an earlier "
+            "build of this script set the scan-mode GUCs "
+            "(`enable_seqscan`/`enable_indexscan`/`enable_bitmapscan`) only for the mode being "
+            "requested, assuming `SET LOCAL` reverts automatically once its `with "
+            "conn.transaction():` block exits. It doesn't, for every call after the first: this "
+            "function runs many times per query inside one long-lived connection, so after the "
+            "first call every later `with conn.transaction():` here opens a SAVEPOINT rather "
+            "than a fresh transaction - and Postgres restores `SET LOCAL` values on ROLLBACK TO "
+            "SAVEPOINT but *not* on a normal RELEASE SAVEPOINT. One \"hnsw\" call's "
+            "`enable_seqscan = off` was silently leaking into every later \"exact\" call in the "
+            "same run, quietly turning most of the \"exact\" ground truth into something other "
+            "than a true sequential scan - which is also why an earlier version of this report "
+            "showed implausibly high recall (~0.96-0.97 headline, and an empty tie-free subset "
+            "used as confirmation that duplication alone explained the gap): for most queries, "
+            "\"exact\" and \"hnsw\" were silently comparing against something close to the same "
+            "plan, not two genuinely independent measurements. Every call now sets every "
+            "relevant GUC explicitly, both on and off, so no call can be contaminated by "
+            "whichever mode ran before it. **The numbers below are from the corrected version, "
+            "and they are substantially lower than previously reported** - the duplication "
+            "finding (20C-2, below) still holds as a real, independently-verified fact about "
+            "this corpus, but it is no longer sufficient on its own to explain the size of the "
+            "recall gap; genuine HNSW recall on this corpus is worse than the pre-fix numbers "
+            "suggested."
+        ),
         "",
         f"## Headline: Recall@{k} @ ef_search={headline_ef}",
         "",
@@ -649,12 +690,19 @@ def generate_recall_report(results: dict, output_path=None) -> Path:
         "## Corpus duplication (Sub-commit 20C-2)",
         "",
         (
-            "Finding 2 from the sweep above (ordinary recall ~0.20 at low ef_search) traces to "
-            "bit-identical `embedded_text` values at scale, not to HNSW quality. This corpus's "
-            "synthetic error text is generated from a small closed set of templates "
-            "(`producer/errors.py`, Step 5's design) crossed with a handful of `method` and "
-            "`gateway` values, so the same exact string - and therefore the same exact embedding "
-            "vector - recurs across thousands of rows."
+            "This corpus's synthetic error text is generated from a small closed set of "
+            "templates (`producer/errors.py`, Step 5's design) crossed with a handful of "
+            "`method` and `gateway` values, so the same exact string - and therefore the same "
+            "exact embedding vector - recurs across thousands of rows, producing pervasive "
+            "distance ties in the exact top-k (below). That duplication is real, and "
+            "independently confirmed by the raw counts below - but after the 20C-3 correctness "
+            "fix (above), it is not, by itself, sufficient to explain the size of the recall gap "
+            "in the sweep above: `distance_recall` is already tie-aware (an equidistant "
+            "substitution still counts as a match) and it is *also* low even at "
+            f"ef_search={headline_ef}. Duplication explains why `id_recall` specifically is an "
+            "unreliable, often-undefined metric here; it does not explain away the low "
+            "`distance_recall` - that reflects a genuine HNSW retrieval-quality gap on this "
+            "corpus."
         ),
         "",
         _markdown_duplication_table(results),
@@ -683,9 +731,12 @@ def generate_recall_report(results: dict, output_path=None) -> Path:
             "expected rather than a gap in the query set: with this much exact duplication, "
             "essentially any query into this corpus lands on a tied top-k. The cross-check "
             "therefore can't run in the direction originally planned (comparing tie-free vs. "
-            "tied), but the reason it can't run *is* the finding - it is direct, mechanical "
-            "confirmation that duplication, not HNSW quality, is what makes id_recall "
-            "unreliable on this corpus."
+            "tied). This confirms duplication makes `id_recall` specifically unreliable/"
+            "undefined here (there is no unique true top-k to compare ids against) - but it "
+            "does **not** explain away the low `distance_recall` reported above, since that "
+            "metric is already tie-aware. The genuine finding is that HNSW recall on this "
+            "corpus is poor; duplication only explains why the weaker (`id_recall`) of the two "
+            "metrics is additionally unusable here."
         )
     else:
         tied_dist = _tie_split_distance_recall(results, headline_ef)["tied"]["mean"]
