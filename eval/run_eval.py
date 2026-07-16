@@ -20,12 +20,14 @@ or `make eval-run`.
 """
 
 import argparse
+import hashlib
 import json
+import subprocess
 import time
 from datetime import UTC, datetime
 from pathlib import Path
 
-from agent.loop import run_turn
+from agent.loop import MODEL, run_turn
 from agent.mcp_bridge import MCPBridge
 from consumer.db import connect as db_connect
 from demo.incident_control import (
@@ -207,6 +209,24 @@ def _preflight() -> None:
     print(f"[preflight] data flowing: {data.get('human_readable', data)}")
 
 
+def _git_commit() -> str:
+    """Short commit SHA for run provenance, captured once at run time (not
+    re-derived later by a report). Degrades to "unknown" rather than raising
+    - a missing git binary or a non-repo checkout must never abort a real
+    (API-cost-incurring) eval run over a metadata nicety."""
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            cwd=REPO_ROOT,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        return result.stdout.strip() or "unknown"
+    except (OSError, subprocess.CalledProcessError):
+        return "unknown"
+
+
 def _load_golden_questions() -> list[dict]:
     return json.loads(GOLDEN_QUESTIONS_PATH.read_text(encoding="utf-8"))
 
@@ -341,18 +361,27 @@ def main() -> None:
     print("=== Eval runner (capture only) ===")
     _preflight()
 
+    # Captured now (after preflight, before the run loop) so a preflight
+    # failure never produces a partial run_metadata block, and so provenance
+    # reflects this run's actual state rather than being reconstructed later
+    # from present-day source (see spec 20a-run-metadata for why that's wrong).
+    run_started_at = datetime.now(UTC)
+    golden_set_sha256 = hashlib.sha256(GOLDEN_QUESTIONS_PATH.read_bytes()).hexdigest()
+    git_commit = _git_commit()
+
     all_questions = _load_golden_questions()
     questions = _select_questions(all_questions, args.questions)
     repeats = args.repeats
     total_runs = len(questions) * repeats
 
-    run_started_at = datetime.now(UTC)
     runs = []
     run_number = 0
     for question in questions:
         for repeat_index in range(1, repeats + 1):
             run_number += 1
             runs.append(_run_one(question, repeat_index, repeats, run_number, total_runs))
+
+    finished_at = datetime.now(UTC)
 
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
     timestamp = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
@@ -362,6 +391,20 @@ def main() -> None:
         "repeats_per_question": repeats,
         "golden_questions_source": "demo/golden_questions.json",
         "runs": runs,
+        "run_metadata": {
+            "model": MODEL,
+            "started_at": run_started_at.isoformat(),
+            "finished_at": finished_at.isoformat(),
+            "repeats_per_question": repeats,
+            "golden_set_path": "demo/golden_questions.json",
+            "golden_set_sha256": golden_set_sha256,
+            "git_commit": git_commit,
+            "eval_config": {
+                "post_clear_pause_seconds": POST_CLEAR_PAUSE_SECONDS,
+                "post_gate_buffer_seconds": POST_GATE_BUFFER_SECONDS,
+                "ground_truth_windows_source": "eval/ground_truth_queries.py",
+            },
+        },
     }
     out_path.write_text(json.dumps(results, indent=2), encoding="utf-8")
 
