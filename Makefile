@@ -1,4 +1,4 @@
-.PHONY: up down smoke smoke-db logs produce watch consume inject-status inject-clear db-count freshness embed-demo search-demo mcp mcp-dev chat demo eval-run eval-grade
+.PHONY: up down smoke smoke-db logs produce watch consume inject-status inject-clear db-count freshness embed-demo search-demo mcp mcp-dev chat demo eval-run eval-grade eval-report
 
 # --env-file .env is required because Docker Compose v5+ no longer auto-reads
 # .env from the working directory. This loads POSTGRES_PASSWORD (and any future
@@ -62,6 +62,9 @@ eval-run:
 
 eval-grade:
 	uv run python -m eval.grade
+
+eval-report:
+	uv run python -m eval.report
 
 # Usage: make search-demo "connection timed out"
 # The pattern rule below swallows the quoted query so Make doesn't try to

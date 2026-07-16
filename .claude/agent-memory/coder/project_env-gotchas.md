@@ -5,10 +5,11 @@ metadata:
   type: project
 ---
 
-- `graphify` CLI is not on PATH in the Bash tool (bash or PowerShell) despite
-  CLAUDE.md instructing graph-first + `graphify update .`. Query attempts fail
-  with "command not found" — go straight to Glob/Grep/Read and mention the
-  skipped graph update in the report.
+- `graphify` CLI availability on PATH has been inconsistent across sessions —
+  it failed with "command not found" in an earlier session but worked fine
+  (query/explain both returned real results) in the Step 20B session. Try
+  `graphify query "<question>"` first each session; only fall back straight to
+  Glob/Grep/Read (and mention the skip in the report) if it actually fails.
 - Local Postgres for smoke checks: localhost:5433, db `streaming_rag`, user
   `rag`; `consumer.db.connect()` reads this from `consumer/config.py`.
 - Dependencies are uv-managed: add with `uv add <pkg>`, never hand-edit
