@@ -112,7 +112,9 @@ won't have anything to talk about otherwise):
 ```
 make produce      # terminal 2: generates the event stream
 make consume      # terminal 3: loads the embedding model on first run
-                   # (downloads ~80MB the very first time — this is normal, not hung)
+                   # (downloads ~88MB the very first time — this is normal, not hung;
+                   # you may also see a "sending unauthenticated requests to the HF Hub"
+                   # warning on first download — harmless, no token required)
 ```
 
 In a fourth terminal:
@@ -131,6 +133,28 @@ three incident types, and asks the agent grounded questions about each:
 ```
 make demo
 ```
+
+**First-run timing**, measured from a torn-down state (`docker compose down -v`
++ `.venv` removed) on a machine that already had the Docker images and
+embedding model cached locally from earlier use: teardown through `uv sync`,
+`make up`, `make smoke-db`, and a working `make chat` exchange took about
+5 minutes; a full `make demo` run (all three incidents, six grounded answers)
+takes about 5 minutes once the stack is warm — most of that is deliberate
+pacing (a 30s calm-baseline wait plus two 75s buffers so each injected
+incident has time to dominate its measurement window before being asked
+about), not slowness. **Not measured here**: a genuinely first-time image
+pull and model download, since this machine's cache made that a no-op. Budget
+extra time for those — the three Docker images total about 1.6GB
+(`pgvector/pgvector:pg17` ~627MB, `apache/kafka:4.3.0` ~675MB,
+`sosedoff/pgweb:latest` ~265MB) and the embedding model is ~88MB — both are
+one-time costs on a truly fresh machine, not per-run.
+
+**Troubleshooting:** `make demo` reconfigures its own output to UTF-8
+internally, so it runs cleanly on a stock Windows console without any setup.
+If a different command (`make chat`, `python -m agent.ask`) ever crashes with
+`UnicodeEncodeError` because a model answer contains a character Windows'
+default console codepage can't display, run `setx PYTHONUTF8 1` once and open
+a new terminal.
 
 ## How it works
 

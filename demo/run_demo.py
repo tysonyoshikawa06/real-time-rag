@@ -32,6 +32,7 @@ Run with: `python -m demo.run_demo [--pause]` or `make demo`.
 
 import argparse
 import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -326,6 +327,14 @@ def _ask(pause: bool, label: str, question: str) -> str:
 
 
 def main() -> None:
+    # Windows' default console codepage (cp1252) can't encode characters that
+    # model-generated answers may contain (e.g. "->"), which otherwise crashes
+    # every plain print() below with UnicodeEncodeError. Reconfigure stdout to
+    # UTF-8 unconditionally so this works regardless of the console's codepage
+    # or any env var - don't remove this without re-testing `make demo` on a
+    # stock Windows console with no PYTHONUTF8/PYTHONIOENCODING set.
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+
     parser = argparse.ArgumentParser(description="Run the scripted streaming-RAG demo")
     parser.add_argument(
         "--pause",
