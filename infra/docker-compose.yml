@@ -1,76 +1,31 @@
-# Kafka single-node (KRaft mode) for local development.
-# Kafka 4.x is KRaft-only — no ZooKeeper involved at all.
-
 services:
   kafka:
     image: apache/kafka:4.3.0
     container_name: kafka
     ports:
-      - "29092:29092"   # Exposed to host for Python scripts
+      - "29092:29092" # host_port:container_port
     environment:
-      # -- Node identity (KRaft) --
-      # Combined mode: this single node acts as both broker (handles data) and
-      # controller (manages cluster metadata via Raft consensus).
+      # Identity
       KAFKA_NODE_ID: 1
       KAFKA_PROCESS_ROLES: broker,controller
       KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
 
-      # -- Listeners --
-      # This is the #1 Kafka beginner wall, so here's what's going on:
-      #
-      # Kafka networking works in two phases:
-      #   1. A client connects to a "bootstrap server" (any broker address).
-      #   2. Kafka responds with metadata containing "advertised listeners" —
-      #      the addresses the client should ACTUALLY use for producing/consuming.
-      #
-      # The problem: containers and your host machine see different networks.
-      #   - A container can reach Kafka at "kafka:9092" (Docker DNS), but
-      #     "localhost" inside a container points to THAT container, not Kafka.
-      #   - Your host can reach Kafka at "localhost:29092" (port-mapped), but
-      #     "kafka:9092" means nothing on your host — there's no DNS for it.
-      #
-      # So we set up TWO listeners with different names:
-      #
-      # INTERNAL (port 9092):
-      #   - Binds to 0.0.0.0:9092 inside the container
-      #   - Advertised as "kafka:9092" — the Docker DNS name
-      #   - Used by: other containers on the compose network (our consumer, etc.)
-      #
-      # EXTERNAL (port 29092):
-      #   - Binds to 0.0.0.0:29092 inside the container
-      #   - Advertised as "localhost:29092" — works on your host via port mapping
-      #   - Used by: Python scripts running directly on your machine
-      #
-      # CONTROLLER (port 9093):
-      #   - Internal-only, used for KRaft consensus (metadata replication).
-      #   - Never advertised to clients — it's not for data traffic.
-      #
-      # KAFKA_LISTENERS = what doors Kafka opens (bind addresses).
-      # KAFKA_ADVERTISED_LISTENERS = what Kafka TELLS clients to connect to.
-      # The names (INTERNAL, EXTERNAL) are arbitrary — the mapping to protocols
-      # is what matters (both map to PLAINTEXT = unencrypted, fine for local dev).
+      # Listeners
       KAFKA_LISTENERS: INTERNAL://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093,EXTERNAL://0.0.0.0:29092
       KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka:9092,EXTERNAL://localhost:29092
       KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: INTERNAL:PLAINTEXT,CONTROLLER:PLAINTEXT,EXTERNAL:PLAINTEXT
       KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
       KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
 
-      # -- Cluster ID --
-      # KRaft requires a fixed cluster ID so the storage directory stays valid
-      # across restarts. This is an arbitrary base64 value — safe to hardcode
-      # for local dev.
+      # Clusters
       CLUSTER_ID: MkU3OEVBNTcwNTJENDM2Qk
 
-      # -- Single-node overrides --
-      # These default to 3 (expecting a 3-broker cluster). A single broker can't
-      # replicate to 3 nodes, so we set them to 1.
+      # Nodes
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
       KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
       KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
 
-      # Skip the initial rebalance delay — in production this lets a consumer
-      # group wait for more members before assigning partitions, but in dev
-      # we want instant startup.
+      # Instant assignment to consumer group partitions
       KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
     volumes:
       - kafka-data:/var/lib/kafka/data
@@ -86,13 +41,6 @@ services:
           memory: 1g
           cpus: "1.0"
 
-  # One-shot container that creates the "transactions" topic, then exits.
-  # Why an init container instead of KAFKA_AUTO_CREATE_TOPICS_ENABLE?
-  #   - Explicit: you see exactly what topics exist with what settings.
-  #   - Auto-create uses defaults (1 partition, replication-factor from config)
-  #     and only fires when a client first touches the topic — easy to miss
-  #     misconfiguration until much later.
-  #   - With --if-not-exists, this is safe to re-run (idempotent).
   kafka-init:
     image: apache/kafka:4.3.0
     container_name: kafka-init
@@ -114,9 +62,6 @@ services:
   postgres:
     image: pgvector/pgvector:pg17
     container_name: postgres
-    # Host port 5433 avoids colliding with a local Postgres that might already
-    # be running on the default 5432. Inside the container it's still 5432 —
-    # other containers on this compose network connect to postgres:5432.
     ports:
       - "5433:5432"
     environment:
@@ -125,10 +70,6 @@ services:
       POSTGRES_DB: streaming_rag
     volumes:
       - postgres-data:/var/lib/postgresql/data
-      # Any .sql file in this directory runs automatically on FIRST startup
-      # (when the data directory is empty). On subsequent starts it's skipped,
-      # so the schema isn't re-applied. To re-run: make down, remove the
-      # volume (docker volume rm infra_postgres-data), then make up.
       - ./init.sql:/docker-entrypoint-initdb.d/init.sql:ro
     healthcheck:
       test: pg_isready -U rag -d streaming_rag
@@ -142,10 +83,6 @@ services:
           memory: 512m
           cpus: "0.5"
 
-  # Browser-based Postgres viewer for development. Auto-connects via
-  # DATABASE_URL — no login form, just open http://localhost:8081.
-  # Connects to postgres over the Docker network (postgres:5432), not via
-  # the host-mapped port (localhost:5433).
   pgweb:
     image: sosedoff/pgweb:latest
     container_name: pgweb
